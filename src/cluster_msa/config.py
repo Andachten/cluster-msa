@@ -38,7 +38,7 @@ def resolve_database(explicit: Path | None, environ: Mapping[str, str]) -> Path:
         raise ConfigurationError("database is required: use --db-path or CLUSTER_MSA_DB")
     path = Path(value).expanduser()
     validate_database(path)
-    return path
+    return path.resolve()
 
 
 def validate_database(path: Path) -> None:
@@ -104,6 +104,9 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     _validate_directory_root(tmp_dir, "tmp")
     work_dir = _resolve_work_dir(args, mode, output_dir, tmp_dir)
     _validate_directory_root(work_dir, "work")
+    database_supplied = _arg(args, "db_path", "db")
+    if database_supplied is None:
+        database_supplied = environ.get("CLUSTER_MSA_DB")
     return RunConfig(
         mode=mode,
         input_path=input_path,
@@ -122,6 +125,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         cluster_identity=identity,
         cluster_coverage=coverage,
         cluster_mode=cluster_mode,
+        db_path_supplied=str(database_supplied) if database_supplied is not None else None,
     )
 
 

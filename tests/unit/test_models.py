@@ -49,6 +49,7 @@ def test_errors_share_cluster_msa_base() -> None:
                 "cluster_identity",
                 "cluster_coverage",
                 "cluster_mode",
+                "db_path_supplied",
             ],
         ),
         (ClusterResult, ["representatives", "nonrepresentatives"]),
@@ -86,6 +87,8 @@ def test_run_config_defaults_and_path_annotations() -> None:
     assert config_fields["cluster_identity"].default == 0.7
     assert config_fields["cluster_coverage"].default == 0.8
     assert config_fields["cluster_mode"].default == 0
+    assert config_fields["db_path_supplied"].default is None
+    assert hints["db_path_supplied"] == str | None
     for name in ("input_path", "output_dir", "db_path", "tmp_dir", "work_dir"):
         assert hints[name] is Path
 

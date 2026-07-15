@@ -86,20 +86,25 @@ def _write_success_manifest(
         "mode": config.mode,
         "input": {"path": str(config.input_path), "count": result.expected_count},
         "database": {
-            "path": str(config.db_path),
+            "path": config.db_path_supplied or str(config.db_path),
             "resolved_path": str(config.db_path.resolve()),
         },
         "parameters": parameters,
         "tools": tools,
         "timing": {
-            "timing_scope": "through_manifest_finalization_before_atomic_publication",
+            "timing_scope": "through_pre_manifest_finalization",
             "started_at": _utc_iso(started_at),
             "finished_at": _utc_iso(finished_at),
             "stage_durations_seconds": dict(stage_durations),
         },
         "result": result_data,
     }
-    _write_atomic(path, json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n")
+    _write_atomic(
+        path,
+        json.dumps(
+            document, indent=2, ensure_ascii=True, sort_keys=True, allow_nan=False
+        ) + "\n",
+    )
 
 
 def mark_manifest_failed(path: Path, stage: str, error: Exception) -> None:
@@ -112,9 +117,12 @@ def mark_manifest_failed(path: Path, stage: str, error: Exception) -> None:
             error="output publication failed",
         )
         _write_atomic(
-            path, json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
+            path,
+            json.dumps(
+                document, indent=2, ensure_ascii=True, sort_keys=True, allow_nan=False
+            ) + "\n",
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as caught:
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as caught:
         raise OutputValidationError(f"cannot mark run manifest failed: {path}") from caught
 
 
@@ -167,8 +175,10 @@ def _validate_inputs(
         raise OutputValidationError("manifest config and result modes must match")
     _validate_count("expected", result.expected_count)
     _validate_count("generated", result.generated_count)
-    if result.generated_count > result.expected_count:
-        raise OutputValidationError("manifest generated count cannot exceed expected count")
+    if result.expected_count == 0:
+        raise OutputValidationError("manifest expected count must be positive")
+    if result.generated_count != result.expected_count:
+        raise OutputValidationError("manifest generated count must equal expected count")
     if result.fallback_reason is not None and not isinstance(result.fallback_reason, str):
         raise OutputValidationError("manifest fallback reason must be a string or null")
 
@@ -184,6 +194,21 @@ def _validate_inputs(
             raise OutputValidationError("accelerated manifest requires mmseqs")
         _validate_count("representative", result.representative_count)
         _validate_count("nonrepresentative", result.nonrepresentative_count)
+        if result.representative_count + result.nonrepresentative_count != result.expected_count:
+            raise OutputValidationError("accelerated manifest counts must equal expected count")
+        if result.fallback_reason not in (None, "no_non_representatives"):
+            raise OutputValidationError("accelerated manifest fallback reason is invalid")
+        if result.fallback_reason == "no_non_representatives" and (
+            result.nonrepresentative_count != 0
+            or result.representative_count != result.expected_count
+        ):
+            raise OutputValidationError("accelerated fallback counts are inconsistent")
+        if result.fallback_reason is None and (
+            result.representative_count == 0 or result.nonrepresentative_count == 0
+        ):
+            raise OutputValidationError("accelerated non-fallback counts must be positive")
+
+    _validate_config(config)
 
     if not isinstance(tool_versions, Mapping):
         raise OutputValidationError("manifest tool versions must be a mapping")
@@ -209,6 +234,39 @@ def _validate_inputs(
     if not isinstance(stage_durations, Mapping):
         raise OutputValidationError("manifest stage durations must be a mapping")
     _validate_timing(started_at, finished_at, stage_durations)
+
+
+def _validate_config(config: RunConfig) -> None:
+    if isinstance(config.threads, bool) or not isinstance(config.threads, int) or config.threads <= 0:
+        raise OutputValidationError("manifest threads must be a positive integer")
+    if not isinstance(config.gpu, bool) or not isinstance(config.af3_json, bool):
+        raise OutputValidationError("manifest GPU and AF3 flags must be booleans")
+    if not isinstance(config.gpus, str):
+        raise OutputValidationError("manifest GPU IDs must be a string")
+    for name in ("input_path", "output_dir", "db_path", "tmp_dir", "work_dir"):
+        value = getattr(config, name)
+        if not isinstance(value, Path) or not str(value):
+            raise OutputValidationError(f"manifest {name} must be a nonempty path")
+    if config.db_path_supplied is not None and (
+        not isinstance(config.db_path_supplied, str) or not config.db_path_supplied
+    ):
+        raise OutputValidationError("manifest supplied database path must be a nonempty string")
+    if config.mode == "accelerated":
+        for name in ("cluster_identity", "cluster_coverage"):
+            value = getattr(config, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 < value <= 1
+            ):
+                raise OutputValidationError(f"manifest {name} must be in (0, 1]")
+        if (
+            isinstance(config.cluster_mode, bool)
+            or not isinstance(config.cluster_mode, int)
+            or config.cluster_mode < 0
+        ):
+            raise OutputValidationError("manifest cluster mode must be a nonnegative integer")
 
 
 def _validate_count(name: str, value: object) -> None:

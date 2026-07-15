@@ -63,11 +63,13 @@ def test_accelerated_cli_runs_documented_pipeline_once_per_batch(
     }
     assert set(manifest["timing"]["stage_durations_seconds"]) == {
         "clustering", "representative_search", "compact_database",
-        "nonrepresentative_search", "merge_and_staging", "total"
+        "nonrepresentative_search", "merge_and_staging", "output_validation", "total"
     }
-    assert manifest["timing"]["timing_scope"] == (
-        "through_manifest_finalization_before_atomic_publication"
-    )
+    assert manifest["timing"]["timing_scope"] == "through_pre_manifest_finalization"
+    durations = manifest["timing"]["stage_durations_seconds"]
+    assert durations["total"] >= max(
+        value for name, value in durations.items() if name != "total"
+    ) >= 0
 
 
 def test_accelerated_cli_generates_af3_for_every_record(
@@ -111,7 +113,7 @@ def test_accelerated_cli_fallback_searches_original_csv_without_compact_commands
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["result"]["fallback_reason"] == "no_non_representatives"
     assert set(manifest["timing"]["stage_durations_seconds"]) == {
-        "clustering", "standard_search", "total"
+        "clustering", "standard_search", "output_validation", "total"
     }
 
 

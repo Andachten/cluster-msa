@@ -69,10 +69,12 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
         search_started = time.monotonic()
         run_full_database_search(records, input_csv, staging, config, log_path)
         search_duration = time.monotonic() - search_started
-        publication_started = time.monotonic()
+        validation_started = time.monotonic()
         validate_outputs(staging, records, config.af3_json)
+        validation_duration = time.monotonic() - validation_started
         result = RunResult("standard", len(records), len(records))
         finished_at = datetime.now(timezone.utc)
+        total_duration = time.monotonic() - total_started
         write_manifest(
             staging / "run_manifest.json",
             config=config,
@@ -82,8 +84,8 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
             finished_at=finished_at,
             stage_durations={
                 "full_database_search": search_duration,
-                "validation_and_staging": time.monotonic() - publication_started,
-                "total": time.monotonic() - total_started,
+                "output_validation": validation_duration,
+                "total": total_duration,
             },
         )
         retained_manifest = None

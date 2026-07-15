@@ -45,11 +45,13 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert manifest["input"] == {"path": str(input_path), "count": 2}
     assert manifest["tools"]["colabfold_search"]["version"] == "fake-colabfold-search 1.0"
     assert set(manifest["timing"]["stage_durations_seconds"]) == {
-        "full_database_search", "validation_and_staging", "total"
+        "full_database_search", "output_validation", "total"
     }
-    assert manifest["timing"]["timing_scope"] == (
-        "through_manifest_finalization_before_atomic_publication"
-    )
+    assert manifest["timing"]["timing_scope"] == "through_pre_manifest_finalization"
+    durations = manifest["timing"]["stage_durations_seconds"]
+    assert durations["total"] >= max(
+        durations["full_database_search"], durations["output_validation"]
+    ) >= 0
     assert all(value >= 0 for value in manifest["timing"]["stage_durations_seconds"].values())
     derived_work = tmp_dir / "cluster-msa-work"
     assert derived_work.is_dir()
@@ -313,13 +315,13 @@ def test_standard_cli_manifest_preserves_relative_database_spelling(
     input_path = tmp_path / "input.csv"
     input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
     output = tmp_path / "output"
-    relative_database = Path(fake_database.name)
+    relative_database = f"./{fake_database.name}"
     monkeypatch.chdir(tmp_path)
 
     result = main(
         [
             "standard", "--input", str(input_path), "--output-dir", str(output),
-            "--db-path", str(relative_database), "--colabfold-search",
+            "--db-path", relative_database, "--colabfold-search",
             str(fake_colabfold_search.executable), "--tmp-dir", str(tmp_path / "tmp"),
         ]
     )
@@ -327,11 +329,11 @@ def test_standard_cli_manifest_preserves_relative_database_spelling(
     assert result == 0
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["database"] == {
-        "path": str(relative_database),
+        "path": relative_database,
         "resolved_path": str(fake_database.resolve()),
     }
     search = [
         invocation for invocation in fake_colabfold_search.invocations()
         if invocation["argv"] != ["--version"]
     ][0]
-    assert search["argv"][1] == str(relative_database)
+    assert search["argv"][1] == str(fake_database.resolve())

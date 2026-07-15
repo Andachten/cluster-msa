@@ -34,6 +34,7 @@ class RunConfig:
     cluster_identity: float = 0.7
     cluster_coverage: float = 0.8
     cluster_mode: int = 0
+    db_path_supplied: str | None = None
 
 
 @dataclass(frozen=True)

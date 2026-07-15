@@ -72,9 +72,8 @@ def test_resolve_database_preserves_relative_user_spelling(tmp_path, monkeypatch
     environ = {"CLUSTER_MSA_DB": "relative-db"} if source == "environment" else {}
 
     resolved = resolve_database(explicit, environ)
-    assert resolved == Path("relative-db")
-    assert not resolved.is_absolute()
-    assert resolved.resolve() == database
+    assert resolved == database
+    assert resolved.is_absolute()
 
 
 @pytest.mark.parametrize("bad", ["missing", "file", "incomplete"])
@@ -143,6 +142,38 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
     assert config.gpus == ""
     assert config.tmp_dir == Path(".cluster-msa-tmp")
     assert config.work_dir == Path(".cluster-msa-tmp") / "cluster-msa-work"
+    assert config.db_path_supplied == str(db)
+
+
+@pytest.mark.parametrize(
+    ("explicit", "environment", "supplied"),
+    [
+        ("./database", None, "./database"),
+        (None, "./database", "./database"),
+        ("~/database", None, "~/database"),
+    ],
+)
+def test_build_run_config_preserves_exact_database_spelling(
+    tmp_path, monkeypatch, explicit, environment, supplied
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    database_parent = home if supplied.startswith("~") else tmp_path
+    database = database_parent / "database"
+    database.mkdir()
+    (database / "uniref30_component").write_text("", encoding="utf-8")
+    (database / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    search = executable(tmp_path / "search")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    environ = {"COLABFOLD_SEARCH": str(search)}
+    if environment is not None:
+        environ["CLUSTER_MSA_DB"] = environment
+
+    config = build_run_config(args_for(tmp_path, db=explicit), environ)
+
+    assert config.db_path_supplied == supplied
+    assert config.db_path == database.resolve()
 
 
 @pytest.mark.parametrize(

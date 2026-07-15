@@ -87,7 +87,7 @@ def test_write_manifest_has_stable_v1_schema_and_no_sensitive_content(tmp_path, 
             },
         },
         "timing": {
-            "timing_scope": "through_manifest_finalization_before_atomic_publication",
+            "timing_scope": "through_pre_manifest_finalization",
             "started_at": "2026-07-15T09:30:00Z",
             "finished_at": "2026-07-15T09:30:12Z",
             "stage_durations_seconds": {"clustering": 1.25, "total": 12.0},
@@ -133,6 +133,27 @@ def test_standard_manifest_omits_accelerated_only_fields_and_mmseqs(tmp_path):
     assert set(document["parameters"]) == {"threads", "gpu", "gpus", "af3"}
     assert set(document["tools"]) == {"colabfold_search"}
     assert document["result"] == {"expected_count": 1, "generated_count": 1}
+
+
+def test_manifest_prefers_exact_supplied_database_spelling(tmp_path):
+    config = replace(make_config(tmp_path), db_path_supplied="~/database")
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "manifest.json"
+
+    write_manifest(
+        path,
+        config=config,
+        result=RunResult("standard", 1, 1),
+        tool_versions={"colabfold_search": "version"},
+        started_at=now,
+        finished_at=now,
+        stage_durations={"total": 0.0},
+    )
+
+    assert json.loads(path.read_text(encoding="utf-8"))["database"] == {
+        "path": "~/database",
+        "resolved_path": str(config.db_path.resolve()),
+    }
 
 
 @pytest.mark.parametrize(
@@ -324,6 +345,130 @@ def test_write_manifest_rejects_empty_executable_name(tmp_path):
         write_manifest(
             tmp_path / "manifest.json",
             config=config,
+            result=RunResult("standard", 1, 1),
+            tool_versions={"colabfold_search": "version"},
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"threads": 0},
+        {"threads": True},
+        {"gpu": 1},
+        {"af3_json": 0},
+        {"gpus": None},
+        {"input_path": "input.csv"},
+        {"output_dir": "output"},
+        {"db_path": "database"},
+        {"tmp_dir": "tmp"},
+        {"work_dir": "work"},
+        {"db_path_supplied": ""},
+        {"db_path_supplied": 7},
+    ],
+)
+def test_write_manifest_rejects_invalid_emitted_standard_config(tmp_path, changes):
+    config = replace(make_config(tmp_path), **changes)
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=config,
+            result=RunResult("standard", 1, 1),
+            tool_versions={"colabfold_search": "version"},
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cluster_identity": 0},
+        {"cluster_identity": 1.1},
+        {"cluster_identity": True},
+        {"cluster_identity": float("nan")},
+        {"cluster_coverage": 0},
+        {"cluster_coverage": float("inf")},
+        {"cluster_coverage": "0.8"},
+        {"cluster_mode": -1},
+        {"cluster_mode": True},
+    ],
+)
+def test_write_manifest_rejects_invalid_emitted_accelerated_config(tmp_path, changes):
+    config = replace(make_config(tmp_path, mode="accelerated"), **changes)
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=config,
+            result=RunResult("accelerated", 2, 2, 1, 1),
+            tool_versions={"colabfold_search": "version", "mmseqs": "version"},
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        RunResult("standard", 0, 0),
+        RunResult("standard", 2, 1),
+        RunResult("accelerated", 3, 3, 1, 1),
+        RunResult("accelerated", 2, 2, 2, 0, "unexpected"),
+        RunResult("accelerated", 2, 2, 1, 1, "no_non_representatives"),
+        RunResult("accelerated", 2, 2, 1, 0, "no_non_representatives"),
+        RunResult("accelerated", 2, 2, 2, 0),
+        RunResult("accelerated", 2, 2, 0, 2),
+    ],
+)
+def test_write_manifest_rejects_inconsistent_success_counts(tmp_path, result):
+    config = make_config(tmp_path, mode=result.mode)
+    now = datetime.now(timezone.utc)
+    versions = {"colabfold_search": "version"}
+    if result.mode == "accelerated":
+        versions["mmseqs"] = "version"
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=config,
+            result=result,
+            tool_versions=versions,
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )
+
+
+def test_write_manifest_accepts_consistent_accelerated_fallback(tmp_path):
+    now = datetime.now(timezone.utc)
+    write_manifest(
+        tmp_path / "manifest.json",
+        config=make_config(tmp_path, mode="accelerated"),
+        result=RunResult("accelerated", 2, 2, 2, 0, "no_non_representatives"),
+        tool_versions={"colabfold_search": "version", "mmseqs": "version"},
+        started_at=now,
+        finished_at=now,
+        stage_durations={"total": 0.0},
+    )
+
+
+def test_write_manifest_wraps_nonfinite_json_serialization(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr("cluster_msa.manifest.__version__", float("nan"))
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=make_config(tmp_path),
             result=RunResult("standard", 1, 1),
             tool_versions={"colabfold_search": "version"},
             started_at=now,

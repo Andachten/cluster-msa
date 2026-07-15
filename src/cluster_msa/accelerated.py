@@ -124,7 +124,9 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             _merge_expected(rep_dir, representatives, staging, config.af3_json, log_path)
             _merge_expected(nonrep_dir, nonrepresentatives, staging, config.af3_json, log_path)
 
+        validation_started = time.monotonic()
         validate_outputs(staging, records, config.af3_json)
+        stage_durations["output_validation"] = time.monotonic() - validation_started
         result = RunResult(
             mode="accelerated",
             expected_count=len(records),
@@ -135,6 +137,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
         )
         if not fallback_reason:
             stage_durations["merge_and_staging"] = time.monotonic() - stage_started
+        finished_at = datetime.now(timezone.utc)
         stage_durations["total"] = time.monotonic() - total_started
         write_manifest(
             staging / "run_manifest.json",
@@ -142,7 +145,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             result=result,
             tool_versions=tool_versions,
             started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=finished_at,
             stage_durations=stage_durations,
         )
         retained_manifest = None
