@@ -1,6 +1,8 @@
 import shutil
 import tempfile
+import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -8,12 +10,16 @@ from cluster_msa.af3 import write_af3_json
 from cluster_msa.clustering import cluster_sequences
 from cluster_msa.compact_db import build_compact_database, search_compact_database
 from cluster_msa.errors import ConfigurationError, OutputValidationError
+from cluster_msa.manifest import write_manifest
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.standard import _preflight_destination, run_full_database_search
+from cluster_msa.tools import get_tool_version
 
 
 def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> RunResult:
+    started_at = datetime.now(timezone.utc)
+    total_started = time.monotonic()
     if config.mode != "accelerated":
         raise ValueError("run_accelerated requires accelerated mode")
     if config.toolchain.mmseqs is None:
@@ -31,7 +37,15 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
     with staged_output(config.output_dir, run_dir) as staging:
         log_path = staging / "run.log"
         _log(log_path, f"run directory: {run_dir}")
+        tool_versions = {
+            "colabfold_search": get_tool_version(
+                run_config.toolchain.colabfold_search, log_path
+            ),
+            "mmseqs": get_tool_version(run_config.toolchain.mmseqs, log_path),
+        }
+        stage_durations = {}
         _log(log_path, "phase 1: cluster sequences")
+        stage_started = time.monotonic()
         clusters = cluster_sequences(
             records,
             mmseqs=run_config.toolchain.mmseqs,
@@ -43,6 +57,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             threads=run_config.threads,
             log_path=log_path,
         )
+        stage_durations["clustering"] = time.monotonic() - stage_started
         representatives = clusters.representatives
         nonrepresentatives = tuple(record for record, _ in clusters.nonrepresentatives)
         fallback_reason = None
@@ -51,6 +66,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             fallback_reason = "no_non_representatives"
             _log(log_path, f"fallback_reason: {fallback_reason}")
             _log(log_path, "standard fallback: searching original full validated records")
+            stage_started = time.monotonic()
             run_full_database_search(
                 records,
                 staging / "canonical-input.csv",
@@ -58,10 +74,12 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 run_config,
                 log_path,
             )
+            stage_durations["standard_search"] = time.monotonic() - stage_started
         else:
             rep_dir = run_dir / "representatives"
             nonrep_dir = run_dir / "nonrepresentatives"
             _log(log_path, "phase 2: full database search for representatives")
+            stage_started = time.monotonic()
             run_full_database_search(
                 representatives,
                 rep_dir / "representatives.csv",
@@ -69,11 +87,15 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 run_config,
                 log_path,
             )
+            stage_durations["representative_search"] = time.monotonic() - stage_started
             _log(log_path, "phase 3: build compact database")
+            stage_started = time.monotonic()
             compact_db = build_compact_database(
                 rep_dir, run_dir / "compact", run_config, log_path
             )
+            stage_durations["compact_database"] = time.monotonic() - stage_started
             _log(log_path, "phase 4: search nonrepresentatives")
+            stage_started = time.monotonic()
             isolated_config = replace(
                 run_config, work_dir=run_dir / "nonrepresentative-search"
             )
@@ -84,6 +106,8 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 isolated_config,
                 log_path,
             )
+            stage_durations["nonrepresentative_search"] = time.monotonic() - stage_started
+            stage_started = time.monotonic()
             if config.af3_json:
                 _log(log_path, "phase 5: write nonrepresentative AlphaFold3 JSON")
                 for record in nonrepresentatives:
@@ -101,6 +125,26 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             _merge_expected(nonrep_dir, nonrepresentatives, staging, config.af3_json, log_path)
 
         validate_outputs(staging, records, config.af3_json)
+        result = RunResult(
+            mode="accelerated",
+            expected_count=len(records),
+            generated_count=len(records),
+            representative_count=len(representatives),
+            nonrepresentative_count=len(nonrepresentatives),
+            fallback_reason=fallback_reason,
+        )
+        if not fallback_reason:
+            stage_durations["merge_publish"] = time.monotonic() - stage_started
+        stage_durations["total"] = time.monotonic() - total_started
+        write_manifest(
+            staging / "run_manifest.json",
+            config=config,
+            result=result,
+            tool_versions=tool_versions,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            stage_durations=stage_durations,
+        )
         if config.keep_work:
             try:
                 shutil.copytree(staging, run_dir / "retained")
@@ -114,14 +158,6 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             overwrite=config.overwrite,
         )
 
-    result = RunResult(
-        mode="accelerated",
-        expected_count=len(records),
-        generated_count=len(records),
-        representative_count=len(representatives),
-        nonrepresentative_count=len(nonrepresentatives),
-        fallback_reason=fallback_reason,
-    )
     if not config.keep_work:
         cleanup_after_publish(run_dir, config.output_dir)
     return result

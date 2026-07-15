@@ -13,6 +13,11 @@ RECORDS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def fake_tool_version(monkeypatch):
+    monkeypatch.setattr("cluster_msa.accelerated.get_tool_version", lambda *args: "test-version")
+
+
 def make_config(tmp_path: Path, **changes) -> RunConfig:
     values = dict(
         mode="accelerated",
@@ -80,7 +85,7 @@ def test_run_accelerated_orders_phases_merges_outputs_and_returns_counts(tmp_pat
     assert (result.representative_count, result.nonrepresentative_count) == (1, 2)
     assert result.fallback_reason is None
     assert sorted(path.name for path in (tmp_path / "output").iterdir()) == [
-        "one.a3m", "run.log", "three.a3m", "two.a3m"
+        "one.a3m", "run.log", "run_manifest.json", "three.a3m", "two.a3m"
     ]
     assert "copied" in (tmp_path / "output" / "run.log").read_text(encoding="utf-8")
     assert not list((tmp_path / "work").iterdir())

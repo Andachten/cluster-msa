@@ -1,10 +1,16 @@
 import argparse
 import os
 import sys
+import traceback
 
 from cluster_msa.accelerated import run_accelerated
 from cluster_msa.config import build_run_config
-from cluster_msa.errors import ClusterMsaError
+from cluster_msa.errors import (
+    ConfigurationError,
+    ExternalToolError,
+    InputValidationError,
+    OutputValidationError,
+)
 from cluster_msa.input import load_sequences
 from cluster_msa.standard import run_standard
 
@@ -43,8 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    verbose = False
     try:
         args = build_parser().parse_args(argv)
+        verbose = args.verbose
         config = build_run_config(args, os.environ)
         records = load_sequences(config.input_path)
         if config.mode == "standard":
@@ -52,6 +60,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         run_accelerated(config, records)
         return 0
-    except ClusterMsaError as error:
-        print(f"cluster-msa: {error}", file=sys.stderr)
+    except (InputValidationError, ConfigurationError) as error:
+        _report_error(error, verbose)
+        return 3
+    except ExternalToolError as error:
+        _report_error(error, verbose)
+        return 4
+    except OutputValidationError as error:
+        _report_error(error, verbose)
+        return 5
+    except KeyboardInterrupt:
+        print("cluster-msa: interrupted", file=sys.stderr)
+        return 130
+    except Exception:
+        if verbose:
+            traceback.print_exc()
+        else:
+            print("cluster-msa: unexpected error", file=sys.stderr)
         return 1
+
+
+def _report_error(error: Exception, verbose: bool) -> None:
+    if verbose:
+        traceback.print_exc()
+    else:
+        print(f"cluster-msa: {error}", file=sys.stderr)

@@ -52,6 +52,13 @@ import pathlib
 import sys
 
 if sys.argv[1:] == ["--version"]:
+    record_path = pathlib.Path(os.environ["FAKE_COLABFOLD_RECORD"])
+    history = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else []
+    history.append({{"argv": ["--version"], "cuda_visible_devices": None, "input_csv": None}})
+    record_path.write_text(json.dumps(history), encoding="utf-8")
+    if os.environ.get("FAKE_COLABFOLD_VERSION_FAIL") == "1":
+        print("forced version failure", file=sys.stderr)
+        raise SystemExit(6)
     print("fake-colabfold-search 1.0")
     raise SystemExit(0)
 
@@ -106,6 +113,10 @@ import pathlib
 import sys
 
 if sys.argv[1:] == ["--version"]:
+    record_path = pathlib.Path(os.environ["FAKE_MMSEQS_RECORD"])
+    history = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else []
+    history.append(["--version"])
+    record_path.write_text(json.dumps(history), encoding="utf-8")
     print("fake-mmseqs 1.0")
     raise SystemExit(0)
 

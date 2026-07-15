@@ -31,27 +31,39 @@ def test_accelerated_cli_runs_documented_pipeline_once_per_batch(
     )) == 0
 
     assert sorted(path.name for path in output.iterdir()) == [
-        "one.a3m", "run.log", "three.a3m", "two.a3m"
+        "one.a3m", "run.log", "run_manifest.json", "three.a3m", "two.a3m"
     ]
-    assert len(fake_colabfold_search.invocations()) == 1
+    assert len(fake_colabfold_search.invocations()) == 2
     commands = fake_mmseqs.invocations()
-    assert [command[0] for command in commands] == [
+    assert commands[0] == ["--version"]
+    pipeline_commands = [command for command in commands if command != ["--version"]]
+    assert [command[0] for command in pipeline_commands] == [
         "easy-cluster", "createdb", "createindex", "createdb", "search", "result2msa"
     ]
     run_roots = {
         next(parent for parent in Path(argument).parents if parent.name.startswith("accelerated-"))
-        for command in commands
+        for command in pipeline_commands
         for argument in command[1:]
         if argument.startswith("/") and "accelerated-" in argument
     }
     assert len(run_roots) == 1
     run_root = run_roots.pop()
-    for command in commands:
+    for command in pipeline_commands:
         for argument in command[1:]:
             if argument.startswith("/") and "accelerated-" in argument:
                 assert Path(argument).is_relative_to(run_root)
-    assert all(str(work.parent / "tmp") not in command for command in commands)
+    assert all(str(work.parent / "tmp") not in command for command in pipeline_commands)
     assert not list(work.iterdir())
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["tools"]["mmseqs"]["version"] == "fake-mmseqs 1.0"
+    assert manifest["result"] == {
+        "expected_count": 3, "generated_count": 3, "representative_count": 2,
+        "nonrepresentative_count": 1, "fallback_reason": None,
+    }
+    assert set(manifest["timing"]["stage_durations_seconds"]) == {
+        "clustering", "representative_search", "compact_database",
+        "nonrepresentative_search", "merge_publish", "total"
+    }
 
 
 def test_accelerated_cli_generates_af3_for_every_record(
@@ -88,10 +100,15 @@ def test_accelerated_cli_fallback_searches_original_csv_without_compact_commands
     )) == 0
 
     assert fake_colabfold_search.invocation()["input_csv"] == "id,sequence\none,ACDE\ntwo,FGHI\n"
-    assert [command[0] for command in fake_mmseqs.invocations()] == ["easy-cluster"]
+    assert [command[0] for command in fake_mmseqs.invocations()] == ["--version", "easy-cluster"]
     log = (output / "run.log").read_text(encoding="utf-8")
     assert "fallback_reason: no_non_representatives" in log
     assert "standard fallback" in log
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["result"]["fallback_reason"] == "no_non_representatives"
+    assert set(manifest["timing"]["stage_durations_seconds"]) == {
+        "clustering", "standard_search", "total"
+    }
 
 
 def test_accelerated_cli_retains_failed_run_and_publishes_nothing(
@@ -107,9 +124,10 @@ def test_accelerated_cli_retains_failed_run_and_publishes_nothing(
     assert main(accelerated_args(
         input_path, output, fake_database, fake_colabfold_search.executable,
         fake_mmseqs.executable, work
-    )) == 1
+    )) == 4
     assert not output.exists()
     assert list(work.glob("accelerated-*"))
+    assert not list(work.rglob("run_manifest.json"))
 
 
 @pytest.mark.parametrize(
@@ -132,7 +150,7 @@ def test_accelerated_cli_retains_diagnostics_for_every_mmseqs_failure(
         fake_mmseqs.executable, work
     ))
 
-    assert result == 1
+    assert result == 4
     assert not output.exists()
     runs = list(work.glob("accelerated-*"))
     assert len(runs) == 1
@@ -155,7 +173,7 @@ def test_accelerated_cli_rejects_malformed_result2msa_without_publishing(
         fake_mmseqs.executable, work
     ))
 
-    assert result == 1
+    assert result == 5
     assert not output.exists()
     assert list(work.glob("accelerated-*/output-*/run.log"))
     assert "Traceback" not in capsys.readouterr().err

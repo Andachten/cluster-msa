@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from cluster_msa.cli import main
@@ -37,10 +38,20 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert (output / "one.a3m").read_text(encoding="utf-8") == ">one\nACDE\n"
     assert (output / "two.a3m").read_text(encoding="utf-8") == ">two\nFGHI\n"
     assert "fake search complete" in (output / "run.log").read_text(encoding="utf-8")
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "success"
+    assert manifest["mode"] == "standard"
+    assert manifest["input"] == {"path": str(input_path), "count": 2}
+    assert manifest["tools"]["colabfold_search"]["version"] == "fake-colabfold-search 1.0"
+    assert set(manifest["timing"]["stage_durations_seconds"]) == {
+        "full_database_search", "validation_publication", "total"
+    }
+    assert all(value >= 0 for value in manifest["timing"]["stage_durations_seconds"].values())
     derived_work = tmp_dir / "cluster-msa-work"
     assert derived_work.is_dir()
     assert not list(derived_work.iterdir())
-    assert len(fake_colabfold_search.invocations()) == 1
+    assert fake_colabfold_search.invocations()[0]["argv"] == ["--version"]
+    assert len(fake_colabfold_search.invocations()) == 2
     assert not mmseqs_marker.exists()
     staging = Path(fake_colabfold_search.invocation()["argv"][2]).resolve()
     assert not staging.is_relative_to(output.resolve())
@@ -106,7 +117,7 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
     cpu_invocation = fake_colabfold_search.invocation()
     assert cpu_invocation["cuda_visible_devices"] is None
     assert cpu_invocation["argv"][-2:] == ["--gpu", "0"]
-    assert len(fake_colabfold_search.invocations()) == 2
+    assert len(fake_colabfold_search.invocations()) == 4
     assert "ignored" in (cpu_output / "run.log").read_text(encoding="utf-8").lower()
 
 
@@ -136,7 +147,7 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
                 str(tmp_dir),
             ]
         )
-        == 1
+        == 5
     )
     assert not output.exists()
     assert list(work.rglob("one.a3m"))
@@ -160,9 +171,10 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
                 str(tmp_dir),
             ]
         )
-        == 1
+        == 4
     )
     assert not failure_output.exists()
+    assert not list(work.rglob("run_manifest.json"))
     assert len(list(work.rglob("run.log"))) == 2
 
 
@@ -189,7 +201,7 @@ def test_standard_cli_rejects_nonempty_output_before_external_compute(
                 str(fake_colabfold_search.executable),
             ]
         )
-        == 1
+        == 5
     )
     assert fake_colabfold_search.invocation_path.exists() is False
 
@@ -219,7 +231,41 @@ def test_standard_cli_rejects_file_tmp_dir_without_traceback(
     )
 
     captured = capsys.readouterr()
-    assert result == 1
+    assert result == 3
     assert "Traceback" not in captured.err
     assert "tmp" in captured.err.lower()
     assert not fake_colabfold_search.invocation_path.exists()
+
+
+def test_standard_cli_treats_version_failure_as_external_error(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, monkeypatch, capsys
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "tmp" / "cluster-msa-work"
+    monkeypatch.setenv("FAKE_COLABFOLD_VERSION_FAIL", "1")
+
+    result = main(
+        [
+            "standard",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output),
+            "--db-path",
+            str(fake_database),
+            "--colabfold-search",
+            str(fake_colabfold_search.executable),
+            "--tmp-dir",
+            str(tmp_path / "tmp"),
+        ]
+    )
+
+    stderr = capsys.readouterr().err
+    assert result == 4
+    assert "version" in stderr
+    assert "log:" in stderr
+    assert not output.exists()
+    assert list(work.rglob("run.log"))
+    assert not list(work.rglob("run_manifest.json"))

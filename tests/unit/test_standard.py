@@ -7,6 +7,11 @@ from cluster_msa.models import RunConfig, SequenceRecord, Toolchain
 from cluster_msa.standard import run_full_database_search, run_standard
 
 
+@pytest.fixture(autouse=True)
+def fake_tool_version(monkeypatch):
+    monkeypatch.setattr("cluster_msa.standard.get_tool_version", lambda *args: "test-version")
+
+
 def test_run_full_database_search_uses_exact_colabfold_command(tmp_path, monkeypatch):
     executable = tmp_path / "colabfold_search"
     executable.write_text("#!/bin/sh\n", encoding="utf-8")

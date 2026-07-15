@@ -1,13 +1,16 @@
 import csv
 import shutil
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
 from cluster_msa.errors import OutputValidationError
+from cluster_msa.manifest import write_manifest
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
-from cluster_msa.tools import run_command
+from cluster_msa.tools import get_tool_version, run_command
 
 
 def run_full_database_search(
@@ -47,6 +50,8 @@ def run_full_database_search(
 
 
 def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunResult:
+    started_at = datetime.now(timezone.utc)
+    total_started = time.monotonic()
     if config.mode != "standard":
         raise ValueError("run_standard requires standard mode")
     _preflight_destination(config.output_dir, config.overwrite)
@@ -58,8 +63,29 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
     with staged_output(config.output_dir, run_dir) as staging:
         input_csv = staging / "canonical-input.csv"
         log_path = staging / "run.log"
+        tool_versions = {
+            "colabfold_search": get_tool_version(config.toolchain.colabfold_search, log_path)
+        }
+        search_started = time.monotonic()
         run_full_database_search(records, input_csv, staging, config, log_path)
+        search_duration = time.monotonic() - search_started
+        publication_started = time.monotonic()
         validate_outputs(staging, records, config.af3_json)
+        result = RunResult("standard", len(records), len(records))
+        finished_at = datetime.now(timezone.utc)
+        write_manifest(
+            staging / "run_manifest.json",
+            config=config,
+            result=result,
+            tool_versions=tool_versions,
+            started_at=started_at,
+            finished_at=finished_at,
+            stage_durations={
+                "full_database_search": search_duration,
+                "validation_publication": time.monotonic() - publication_started,
+                "total": time.monotonic() - total_started,
+            },
+        )
         if config.keep_work:
             shutil.copytree(staging, run_dir / "retained")
         publish_outputs(
@@ -69,7 +95,6 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
             af3_json=config.af3_json,
             overwrite=config.overwrite,
         )
-    result = RunResult("standard", len(records), len(records))
     if not config.keep_work:
         cleanup_after_publish(run_dir, config.output_dir)
     return result
