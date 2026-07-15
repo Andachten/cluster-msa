@@ -6,7 +6,7 @@ from typing import Sequence
 
 from cluster_msa.errors import OutputValidationError
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
-from cluster_msa.output import publish_outputs, staged_output, validate_outputs
+from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.tools import run_command
 
 
@@ -71,7 +71,7 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
         )
     result = RunResult("standard", len(records), len(records))
     if not config.keep_work:
-        shutil.rmtree(run_dir)
+        cleanup_after_publish(run_dir, config.output_dir)
     return result
 
 

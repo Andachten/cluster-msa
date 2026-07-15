@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from cluster_msa.cli import main
 
 
@@ -32,9 +34,23 @@ def test_accelerated_cli_runs_documented_pipeline_once_per_batch(
         "one.a3m", "run.log", "three.a3m", "two.a3m"
     ]
     assert len(fake_colabfold_search.invocations()) == 1
-    assert fake_mmseqs.count("easy-cluster") == 1
-    assert fake_mmseqs.count("search") == 1
-    assert fake_mmseqs.count("result2msa") == 1
+    commands = fake_mmseqs.invocations()
+    assert [command[0] for command in commands] == [
+        "easy-cluster", "createdb", "createindex", "createdb", "search", "result2msa"
+    ]
+    run_roots = {
+        next(parent for parent in Path(argument).parents if parent.name.startswith("accelerated-"))
+        for command in commands
+        for argument in command[1:]
+        if argument.startswith("/") and "accelerated-" in argument
+    }
+    assert len(run_roots) == 1
+    run_root = run_roots.pop()
+    for command in commands:
+        for argument in command[1:]:
+            if argument.startswith("/") and "accelerated-" in argument:
+                assert Path(argument).is_relative_to(run_root)
+    assert all(str(work.parent / "tmp") not in command for command in commands)
     assert not list(work.iterdir())
 
 
@@ -94,3 +110,52 @@ def test_accelerated_cli_retains_failed_run_and_publishes_nothing(
     )) == 1
     assert not output.exists()
     assert list(work.glob("accelerated-*"))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["easy-cluster:1", "createdb:1", "createindex:1", "createdb:2", "search:1", "result2msa:1"],
+)
+def test_accelerated_cli_retains_diagnostics_for_every_mmseqs_failure(
+    tmp_path: Path, fake_database, fake_colabfold_search, fake_mmseqs, monkeypatch,
+    capsys, failure
+):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    monkeypatch.setenv("FAKE_COLABFOLD_ADD_HIT", "1")
+    monkeypatch.setenv("FAKE_MMSEQS_FAIL_AT", failure)
+
+    result = main(accelerated_args(
+        input_path, output, fake_database, fake_colabfold_search.executable,
+        fake_mmseqs.executable, work
+    ))
+
+    assert result == 1
+    assert not output.exists()
+    runs = list(work.glob("accelerated-*"))
+    assert len(runs) == 1
+    assert list(runs[0].rglob("run.log"))
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_accelerated_cli_rejects_malformed_result2msa_without_publishing(
+    tmp_path: Path, fake_database, fake_colabfold_search, fake_mmseqs, monkeypatch, capsys
+):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    monkeypatch.setenv("FAKE_COLABFOLD_ADD_HIT", "1")
+    monkeypatch.setenv("FAKE_MMSEQS_RESULT2MSA_EMPTY", "1")
+
+    result = main(accelerated_args(
+        input_path, output, fake_database, fake_colabfold_search.executable,
+        fake_mmseqs.executable, work
+    ))
+
+    assert result == 1
+    assert not output.exists()
+    assert list(work.glob("accelerated-*/output-*/run.log"))
+    assert "Traceback" not in capsys.readouterr().err

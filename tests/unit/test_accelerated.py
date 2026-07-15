@@ -86,6 +86,53 @@ def test_run_accelerated_orders_phases_merges_outputs_and_returns_counts(tmp_pat
     assert not list((tmp_path / "work").iterdir())
 
 
+def test_run_accelerated_isolates_all_phase_tmp_paths_per_run(tmp_path, monkeypatch):
+    from cluster_msa.accelerated import run_accelerated
+
+    captured = []
+    stale = tmp_path / "work" / "accelerated-stale" / "tmp"
+    stale.mkdir(parents=True)
+
+    def cluster(records, **kwargs):
+        captured.append(("cluster", kwargs["tmp_dir"], kwargs["work_dir"]))
+        return ClusterResult((records[0],), ((records[1], "one"),))
+
+    def full(records, input_csv, destination, config, log_path):
+        captured.append(("full", config.tmp_dir, destination))
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "one.a3m").write_text(">one\nACDE\n>hit\nAAAA\n", encoding="utf-8")
+
+    def compact(rep_dir, work_dir, config, log_path):
+        captured.append(("compact", config.tmp_dir, work_dir))
+        return work_dir / "compactDB"
+
+    def search(records, compact_db, output_dir, config, log_path):
+        captured.append(("search", config.tmp_dir, config.work_dir))
+        output_dir.mkdir(parents=True)
+        (output_dir / "two.a3m").write_text(">two\nFGHI\n>hit\nAAAA\n", encoding="utf-8")
+
+    monkeypatch.setattr("cluster_msa.accelerated.cluster_sequences", cluster)
+    monkeypatch.setattr("cluster_msa.accelerated.run_full_database_search", full)
+    monkeypatch.setattr("cluster_msa.accelerated.build_compact_database", compact)
+    monkeypatch.setattr("cluster_msa.accelerated.search_compact_database", search)
+
+    first = make_config(tmp_path, keep_work=True)
+    run_accelerated(first, RECORDS[:2])
+    second = make_config(tmp_path, output_dir=tmp_path / "output-2", keep_work=True)
+    run_accelerated(second, RECORDS[:2])
+
+    first_tmp = captured[0][1]
+    second_tmp = captured[4][1]
+    assert first_tmp != second_tmp
+    assert first_tmp.name == second_tmp.name == "tmp"
+    assert first_tmp != first.tmp_dir
+    assert stale not in (first_tmp, second_tmp)
+    for offset, expected_tmp in ((0, first_tmp), (4, second_tmp)):
+        run_dir = expected_tmp.parent
+        assert all(item[1] == expected_tmp for item in captured[offset : offset + 4])
+        assert all(item[2].is_relative_to(run_dir) for item in captured[offset : offset + 4])
+
+
 def test_run_accelerated_af3_uses_colabfold_for_reps_and_writes_nonrep_json(tmp_path, monkeypatch):
     from cluster_msa.accelerated import run_accelerated
 
@@ -259,6 +306,35 @@ def test_run_accelerated_keep_work_retains_success(tmp_path, monkeypatch):
     retained = list((tmp_path / "work").glob("accelerated-*/retained"))
     assert len(retained) == 1
     assert (retained[0] / "one.a3m").exists()
+
+
+def test_run_accelerated_cleanup_failure_returns_success_and_warns(tmp_path, monkeypatch):
+    from cluster_msa.accelerated import run_accelerated
+
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.cluster_sequences",
+        lambda records, **kwargs: ClusterResult(tuple(records), ()),
+    )
+
+    def full(records, input_csv, destination, config, log_path):
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "one.a3m").write_text(">one\nACDE\n", encoding="utf-8")
+
+    real_rmtree = __import__("shutil").rmtree
+
+    def fail_run_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith("accelerated-"):
+            raise OSError("cleanup denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("cluster_msa.accelerated.shutil.rmtree", fail_run_cleanup)
+    monkeypatch.setattr("cluster_msa.accelerated.run_full_database_search", full)
+
+    result = run_accelerated(make_config(tmp_path), RECORDS[:1])
+
+    assert result.generated_count == 1
+    assert list((tmp_path / "work").glob("accelerated-*"))
+    assert "cleanup warning" in (tmp_path / "output" / "run.log").read_text().lower()
 
 
 def test_run_accelerated_wraps_af3_decode_failure(tmp_path, monkeypatch):

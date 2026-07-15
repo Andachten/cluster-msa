@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from cluster_msa.errors import OutputValidationError
@@ -246,3 +248,32 @@ def test_run_standard_keep_work_retains_successful_staging(tmp_path, monkeypatch
     assert (retained[0] / "canonical-input.csv").exists()
     assert (retained[0] / "one.a3m").exists()
     assert (retained[0] / "run.log").exists()
+
+
+def test_run_standard_cleanup_failure_returns_success_and_warns(tmp_path, monkeypatch):
+    records = (SequenceRecord("one", "ACDE"),)
+    config = RunConfig(
+        "standard", tmp_path / "in.csv", tmp_path / "output", tmp_path,
+        Toolchain(tmp_path / "search", None), 1, False, "", False,
+        tmp_path / "tmp", tmp_path / "work", False, False, False,
+    )
+
+    def successful(records, input_csv, destination, config, log_path):
+        (destination / "one.a3m").write_text(">one\nACDE\n", encoding="utf-8")
+        log_path.write_text("ok\n", encoding="utf-8")
+
+    real_rmtree = __import__("shutil").rmtree
+
+    def fail_run_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith("standard-"):
+            raise OSError("cleanup denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("cluster_msa.standard.shutil.rmtree", fail_run_cleanup)
+    monkeypatch.setattr("cluster_msa.standard.run_full_database_search", successful)
+
+    result = run_standard(config, records)
+
+    assert result.generated_count == 1
+    assert list((tmp_path / "work").glob("standard-*"))
+    assert "cleanup warning" in (tmp_path / "output" / "run.log").read_text().lower()

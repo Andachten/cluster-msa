@@ -186,6 +186,24 @@ def test_staged_output_allocates_unique_directories_under_work_dir(tmp_path: Pat
             assert second.exists()
 
 
+@pytest.mark.parametrize("failure", ["mkdir", "mkdtemp"])
+def test_staged_output_wraps_creation_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    work = tmp_path / "work"
+    if failure == "mkdir":
+        work.write_text("not a directory", encoding="utf-8")
+    else:
+        monkeypatch.setattr(
+            "cluster_msa.output.tempfile.mkdtemp",
+            lambda **kwargs: (_ for _ in ()).throw(OSError("denied")),
+        )
+
+    with pytest.raises(OutputValidationError, match="cannot create output staging"):
+        with staged_output(tmp_path / "output", work):
+            pytest.fail("staging unexpectedly created")
+
+
 def test_publish_preflights_validation_before_moving_anything(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     output = tmp_path / "output"
@@ -250,6 +268,30 @@ def test_publish_rejects_duplicate_record_ids_before_moving_files(tmp_path: Path
 
     assert (output / "first.a3m").read_text(encoding="utf-8") == "old"
     assert (staging / "first.a3m").exists()
+
+
+def test_publish_backup_cleanup_failure_keeps_published_outputs_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    write_valid_outputs(staging)
+    (staging / "run.log").write_text("complete\n", encoding="utf-8")
+    real_rmtree = __import__("shutil").rmtree
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith("publication-backup-"):
+            raise OSError("cleanup denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("cluster_msa.output.shutil.rmtree", fail_backup_cleanup)
+
+    publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=False)
+
+    assert (output / "first.a3m").exists()
+    assert (output / "second.a3m").exists()
+    assert "cleanup warning" in (output / "run.log").read_text().lower()
 
 
 @pytest.mark.parametrize("existing_first", [True, False])

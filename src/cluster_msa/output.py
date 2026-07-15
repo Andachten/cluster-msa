@@ -13,15 +13,31 @@ from cluster_msa.models import SequenceRecord
 
 @contextmanager
 def staged_output(output_dir: Path, work_dir: Path) -> Iterator[Path]:
-    del output_dir
-    work_dir.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix="output-", dir=work_dir))
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix="output-", dir=work_dir))
+    except OSError as error:
+        raise OutputValidationError(f"cannot create output staging under {work_dir}: {error}") from error
     try:
         yield staging
     except BaseException:
         raise
     else:
-        shutil.rmtree(staging)
+        cleanup_after_publish(staging, output_dir)
+
+
+def cleanup_after_publish(path: Path, output_dir: Path) -> bool:
+    """Remove published work without turning successful results into a failed run."""
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        try:
+            with (output_dir / "run.log").open("a", encoding="utf-8") as log:
+                log.write(f"cleanup warning: retained {path}: {error}\n")
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def validate_outputs(staging: Path, records: Sequence[SequenceRecord], af3_json: bool) -> None:
@@ -83,7 +99,7 @@ def publish_outputs(
             ) from error
         shutil.rmtree(backup)
         raise OutputValidationError(f"output publication failed: {error}") from error
-    shutil.rmtree(backup)
+    cleanup_after_publish(backup, output_dir)
 
 
 def _rollback_publication(

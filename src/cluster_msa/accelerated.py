@@ -9,7 +9,7 @@ from cluster_msa.clustering import cluster_sequences
 from cluster_msa.compact_db import build_compact_database, search_compact_database
 from cluster_msa.errors import ConfigurationError, OutputValidationError
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
-from cluster_msa.output import publish_outputs, staged_output, validate_outputs
+from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.standard import _preflight_destination, run_full_database_search
 
 
@@ -26,6 +26,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
         run_dir = Path(tempfile.mkdtemp(prefix="accelerated-", dir=config.work_dir))
     except OSError as error:
         raise OutputValidationError(f"cannot create work directory: {config.work_dir}") from error
+    run_config = replace(config, tmp_dir=run_dir / "tmp")
 
     with staged_output(config.output_dir, run_dir) as staging:
         log_path = staging / "run.log"
@@ -33,13 +34,13 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
         _log(log_path, "phase 1: cluster sequences")
         clusters = cluster_sequences(
             records,
-            mmseqs=config.toolchain.mmseqs,
+            mmseqs=run_config.toolchain.mmseqs,
             work_dir=run_dir / "clustering",
-            tmp_dir=config.tmp_dir,
-            min_seq_id=config.cluster_identity,
-            coverage=config.cluster_coverage,
-            cluster_mode=config.cluster_mode,
-            threads=config.threads,
+            tmp_dir=run_config.tmp_dir,
+            min_seq_id=run_config.cluster_identity,
+            coverage=run_config.cluster_coverage,
+            cluster_mode=run_config.cluster_mode,
+            threads=run_config.threads,
             log_path=log_path,
         )
         representatives = clusters.representatives
@@ -54,7 +55,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 records,
                 staging / "canonical-input.csv",
                 staging,
-                config,
+                run_config,
                 log_path,
             )
         else:
@@ -65,15 +66,17 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 representatives,
                 rep_dir / "representatives.csv",
                 rep_dir,
-                config,
+                run_config,
                 log_path,
             )
             _log(log_path, "phase 3: build compact database")
             compact_db = build_compact_database(
-                rep_dir, run_dir / "compact", config, log_path
+                rep_dir, run_dir / "compact", run_config, log_path
             )
             _log(log_path, "phase 4: search nonrepresentatives")
-            isolated_config = replace(config, work_dir=run_dir / "nonrepresentative-search")
+            isolated_config = replace(
+                run_config, work_dir=run_dir / "nonrepresentative-search"
+            )
             search_compact_database(
                 nonrepresentatives,
                 compact_db,
@@ -120,7 +123,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
         fallback_reason=fallback_reason,
     )
     if not config.keep_work:
-        shutil.rmtree(run_dir)
+        cleanup_after_publish(run_dir, config.output_dir)
     return result
 
 

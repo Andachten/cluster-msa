@@ -114,8 +114,13 @@ record_path = pathlib.Path(os.environ["FAKE_MMSEQS_RECORD"])
 history = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else []
 history.append(sys.argv[1:])
 record_path.write_text(json.dumps(history), encoding="utf-8")
+occurrence = sum(command[0] == subcommand for command in history)
+fail_at = os.environ.get("FAKE_MMSEQS_FAIL_AT")
 if os.environ.get("FAKE_MMSEQS_FAIL") == subcommand:
     print(f"forced {{subcommand}} failure", file=sys.stderr)
+    raise SystemExit(8)
+if fail_at == f"{{subcommand}}:{{occurrence}}":
+    print(f"forced {{subcommand}} occurrence {{occurrence}} failure", file=sys.stderr)
     raise SystemExit(8)
 
 def artifact_family(prefix):
