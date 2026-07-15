@@ -97,6 +97,18 @@ def test_validate_outputs_rejects_expected_directory(tmp_path: Path) -> None:
         validate_outputs(staging, RECORDS, af3_json=False)
 
 
+def test_validate_outputs_rejects_a3m_symlink(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    target = tmp_path / "target.a3m"
+    target.write_text(">query\nACDE\n", encoding="utf-8")
+    (staging / "first.a3m").symlink_to(target)
+    (staging / "second.a3m").write_text(">query\nFGHI\n", encoding="utf-8")
+
+    with pytest.raises(OutputValidationError, match="first.a3m"):
+        validate_outputs(staging, RECORDS, af3_json=False)
+
+
 def test_staged_output_does_not_publish_before_exit_and_cleans_success(tmp_path: Path) -> None:
     output = tmp_path / "output"
     work = tmp_path / "work"
@@ -150,3 +162,39 @@ def test_publish_preflights_validation_before_moving_anything(tmp_path: Path) ->
         publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
 
     assert (output / "first.a3m").read_text(encoding="utf-8") == "old"
+
+
+def test_publish_preflights_all_targets_before_replacing_files(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    (output / "first.a3m").write_text("old", encoding="utf-8")
+    (output / "second.a3m").mkdir()
+
+    with pytest.raises(OutputValidationError, match="second.a3m"):
+        publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    assert (output / "first.a3m").read_text(encoding="utf-8") == "old"
+    assert (staging / "first.a3m").exists()
+    assert (staging / "second.a3m").exists()
+
+
+def test_publish_rejects_symlink_target_before_replacing_files(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    (output / "first.a3m").write_text("old", encoding="utf-8")
+    target = tmp_path / "target.a3m"
+    target.write_text("unsafe", encoding="utf-8")
+    (output / "second.a3m").symlink_to(target)
+
+    with pytest.raises(OutputValidationError, match="second.a3m"):
+        publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    assert (output / "first.a3m").read_text(encoding="utf-8") == "old"
+    assert (staging / "first.a3m").exists()
+    assert target.read_text(encoding="utf-8") == "unsafe"

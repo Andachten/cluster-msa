@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -52,11 +53,17 @@ def publish_outputs(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
+        _validate_destination_file(output_dir / name)
+    for name in names:
         os.replace(staging / name, output_dir / name)
 
 
 def _validate_nonempty_file(path: Path) -> None:
-    if not path.is_file():
+    try:
+        is_regular = stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        is_regular = False
+    if not is_regular:
         raise OutputValidationError(f"missing or invalid output file: {path.name}")
     try:
         if not path.read_text(encoding="utf-8").strip():
@@ -70,3 +77,14 @@ def _validate_destination(output_dir: Path, overwrite: bool) -> None:
         raise OutputValidationError(f"output destination is not a directory: {output_dir}")
     if output_dir.is_dir() and any(output_dir.iterdir()) and not overwrite:
         raise OutputValidationError(f"output destination is not empty: {output_dir}")
+
+
+def _validate_destination_file(path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise OutputValidationError(f"cannot inspect output destination: {path.name}") from error
+    if not stat.S_ISREG(mode):
+        raise OutputValidationError(f"unsafe output destination: {path.name}")
