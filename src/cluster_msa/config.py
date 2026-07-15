@@ -98,10 +98,12 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     if mode == "accelerated" and mmseqs is None:
         raise ConfigurationError("accelerated mode requires mmseqs")
 
-    gpu_value = _arg(args, "gpu")
-    gpu = False if _arg(args, "no_gpu", default=False) else gpu_value is not False
+    gpu = bool(_arg(args, "gpu", default=True))
     gpus = _arg(args, "gpus") or ""
     tmp_dir = Path(_arg(args, "tmp_dir", "tmp") or ".cluster-msa-tmp").expanduser()
+    _validate_directory_root(tmp_dir, "tmp")
+    work_dir = _resolve_work_dir(args, mode, output_dir, tmp_dir)
+    _validate_directory_root(work_dir, "work")
     return RunConfig(
         mode=mode,
         input_path=input_path,
@@ -113,7 +115,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         gpus=gpus,
         af3_json=bool(_arg(args, "af3_json", default=False)),
         tmp_dir=tmp_dir,
-        work_dir=_resolve_work_dir(args, mode, output_dir, tmp_dir),
+        work_dir=work_dir,
         keep_work=bool(_arg(args, "keep_work", default=False)),
         overwrite=bool(_arg(args, "overwrite", default=False)),
         verbose=bool(_arg(args, "verbose", default=False)),
@@ -155,6 +157,18 @@ def _resolve_work_dir(args, mode: str, output_dir: Path, tmp_dir: Path) -> Path:
 
 def _inside(path: Path, directory: Path) -> bool:
     return path.resolve().is_relative_to(directory.resolve())
+
+
+def _validate_directory_root(path: Path, name: str) -> None:
+    if path.exists() and not path.is_dir():
+        raise ConfigurationError(f"{name} directory is not a directory: {path}")
+    parent = path
+    while not parent.exists() and parent != parent.parent:
+        parent = parent.parent
+    if not parent.is_dir():
+        raise ConfigurationError(f"{name} directory parent is not a directory: {parent}")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ConfigurationError(f"{name} directory parent is not writable: {parent}")
 
 
 def _resolve_required_with_environment(explicit, environ, env_name, executable):

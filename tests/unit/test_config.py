@@ -91,7 +91,7 @@ def args_for(tmp_path, **overrides):
         "colabfold_search": None,
         "mmseqs": None,
         "threads": 1,
-        "gpu": None,
+        "gpu": True,
         "gpus": None,
         "af3_json": False,
         "tmp": None,
@@ -188,6 +188,30 @@ def test_accelerated_rejects_work_root_inside_output(tmp_path, work_suffix):
                 mode="accelerated",
                 output=output,
                 work=output / work_suffix,
+                colabfold_search=str(search),
+                mmseqs=str(mmseqs),
+                db=db,
+            ),
+            {},
+        )
+
+
+def test_accelerated_rejects_work_root_that_is_a_file(tmp_path):
+    search = executable(tmp_path / "search")
+    mmseqs = executable(tmp_path / "mmseqs")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    work = tmp_path / "work"
+    work.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="work directory is not a directory"):
+        build_run_config(
+            args_for(
+                tmp_path,
+                mode="accelerated",
+                work=work,
                 colabfold_search=str(search),
                 mmseqs=str(mmseqs),
                 db=db,
@@ -328,13 +352,13 @@ def test_build_run_config_gpu_flag_and_environment_precedence(tmp_path, monkeypa
     assert config.gpus == "2,3"
 
 
-def test_build_run_config_honors_no_gpu_flag(tmp_path):
+def test_build_run_config_honors_gpu_value(tmp_path):
     search = executable(tmp_path / "search")
     db = tmp_path / "db"
     db.mkdir()
     (db / "uniref30_component").write_text("", encoding="utf-8")
     (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
-    args = args_for(tmp_path, gpu=None, no_gpu=True)
+    args = args_for(tmp_path, gpu=False)
     config = build_run_config(
         args,
         {"CLUSTER_MSA_DB": str(db), "COLABFOLD_SEARCH": str(search)},

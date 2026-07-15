@@ -68,3 +68,14 @@ def test_accelerated_parser_owns_accelerated_options():
     assert args.cluster_coverage == 0.8
     assert args.cluster_mode == 1
     assert args.work_dir == "work"
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [(["--gpu", "--no-gpu"], False), (["--no-gpu", "--gpu"], True)],
+)
+def test_gpu_options_are_ordered_last_option_wins(options, expected):
+    args = build_parser().parse_args(
+        ["standard", "--input", "input.csv", "--output-dir", "output", *options]
+    )
+    assert args.gpu is expected

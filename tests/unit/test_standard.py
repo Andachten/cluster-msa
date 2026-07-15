@@ -126,6 +126,39 @@ def test_run_standard_preflights_before_work_or_external_tool(tmp_path, monkeypa
     assert not (tmp_path / "work").exists()
 
 
+@pytest.mark.parametrize("failure", ["mkdir", "mkdtemp"])
+def test_run_standard_wraps_work_directory_creation_errors(tmp_path, monkeypatch, failure):
+    work = tmp_path / "work"
+    if failure == "mkdir":
+        work.write_text("not a directory", encoding="utf-8")
+    else:
+        work.mkdir()
+        monkeypatch.setattr(
+            "cluster_msa.standard.tempfile.mkdtemp",
+            lambda **kwargs: (_ for _ in ()).throw(OSError("denied")),
+        )
+    config = RunConfig(
+        "standard",
+        tmp_path / "in.csv",
+        tmp_path / "output",
+        tmp_path,
+        Toolchain(tmp_path / "search", None),
+        1,
+        False,
+        "",
+        False,
+        tmp_path / "tmp",
+        work,
+        False,
+        False,
+        False,
+    )
+    monkeypatch.setattr("cluster_msa.standard.run_command", lambda *args, **kwargs: pytest.fail())
+
+    with pytest.raises(OutputValidationError, match="cannot create work directory"):
+        run_standard(config, (SequenceRecord("one", "ACDE"),))
+
+
 def test_run_standard_retains_failure_diagnostics_and_cleans_success(tmp_path, monkeypatch):
     records = (SequenceRecord("one", "ACDE"),)
     config = RunConfig(

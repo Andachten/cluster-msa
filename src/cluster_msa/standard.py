@@ -50,8 +50,11 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
     if config.mode != "standard":
         raise ValueError("run_standard requires standard mode")
     _preflight_destination(config.output_dir, config.overwrite)
-    config.work_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = Path(tempfile.mkdtemp(prefix="standard-", dir=config.work_dir))
+    try:
+        config.work_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix="standard-", dir=config.work_dir))
+    except OSError as error:
+        raise OutputValidationError(f"cannot create work directory: {config.work_dir}") from error
     with staged_output(config.output_dir, run_dir) as staging:
         input_csv = staging / "canonical-input.csv"
         log_path = staging / "run.log"

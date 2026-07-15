@@ -192,3 +192,34 @@ def test_standard_cli_rejects_nonempty_output_before_external_compute(
         == 1
     )
     assert fake_colabfold_search.invocation_path.exists() is False
+
+
+def test_standard_cli_rejects_file_tmp_dir_without_traceback(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, capsys
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    invalid_tmp = tmp_path / "tmp-file"
+    invalid_tmp.write_text("not a directory", encoding="utf-8")
+
+    result = main(
+        [
+            "standard",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--db-path",
+            str(fake_database),
+            "--colabfold-search",
+            str(fake_colabfold_search.executable),
+            "--tmp-dir",
+            str(invalid_tmp),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Traceback" not in captured.err
+    assert "tmp" in captured.err.lower()
+    assert not fake_colabfold_search.invocation_path.exists()
