@@ -287,3 +287,86 @@ def test_publish_rolls_back_second_publication_failure(
     assert (staging / "first.a3m").read_text(encoding="utf-8").startswith(">query")
     assert (staging / "second.a3m").read_text(encoding="utf-8").startswith(">query")
     assert (staging / "diagnostic.txt").read_text(encoding="utf-8") == "details"
+
+
+def test_rollback_attempts_every_original_restore_and_preserves_unresolved_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    (output / "first.a3m").write_text("old first", encoding="utf-8")
+    (output / "second.a3m").write_text("old second", encoding="utf-8")
+    (output / "unknown.txt").write_text("keep", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_publication_and_second_restore(source: Path, destination: Path) -> None:
+        if source == staging / "second.a3m" and destination == output / "second.a3m":
+            raise OSError("publication failed")
+        if (
+            source.name == "second.a3m"
+            and source.parent.name.startswith("publication-backup-")
+            and destination == output / "second.a3m"
+        ):
+            raise OSError("second restore failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_publication_and_second_restore)
+
+    with pytest.raises(OutputValidationError) as captured:
+        publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    backups = list(staging.glob("publication-backup-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    assert str(backup) in str(captured.value)
+    assert "second restore failed" in str(captured.value)
+    assert (backup / "second.a3m").read_text(encoding="utf-8") == "old second"
+    assert not (backup / "first.a3m").exists()
+    assert (output / "first.a3m").read_text(encoding="utf-8") == "old first"
+    assert not (output / "second.a3m").exists()
+    assert (staging / "first.a3m").read_text(encoding="utf-8").startswith(">query")
+    assert (staging / "second.a3m").read_text(encoding="utf-8").startswith(">query")
+    assert (output / "unknown.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_failed_published_file_rollback_does_not_overwrite_new_or_original_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    new_first = (staging / "first.a3m").read_text(encoding="utf-8")
+    (output / "first.a3m").write_text("old first", encoding="utf-8")
+    (output / "second.a3m").write_text("old second", encoding="utf-8")
+    (output / "unknown.txt").write_text("keep", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_publication_and_new_file_rollback(source: Path, destination: Path) -> None:
+        if source == staging / "second.a3m" and destination == output / "second.a3m":
+            raise OSError("publication failed")
+        if source == output / "first.a3m" and destination == staging / "first.a3m":
+            raise OSError("new file rollback failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_publication_and_new_file_rollback)
+
+    with pytest.raises(OutputValidationError) as captured:
+        publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    backups = list(staging.glob("publication-backup-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    assert str(backup) in str(captured.value)
+    assert "new file rollback failed" in str(captured.value)
+    assert (backup / "first.a3m").read_text(encoding="utf-8") == "old first"
+    assert not (backup / "second.a3m").exists()
+    assert (output / "first.a3m").read_text(encoding="utf-8") == new_first
+    assert (output / "second.a3m").read_text(encoding="utf-8") == "old second"
+    assert not (staging / "first.a3m").exists()
+    assert (staging / "second.a3m").exists()
+    assert (output / "unknown.txt").read_text(encoding="utf-8") == "keep"

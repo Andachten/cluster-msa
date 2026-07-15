@@ -75,19 +75,42 @@ def publish_outputs(
             os.replace(staging / name, output_dir / name)
             published.append(name)
     except OSError as error:
-        try:
-            for name in reversed(published):
-                os.replace(output_dir / name, staging / name)
-            for name in reversed(backed_up):
-                os.replace(backup / name, output_dir / name)
-        except OSError as rollback_error:
+        rollback_failures = _rollback_publication(staging, output_dir, backup, published, backed_up)
+        if rollback_failures:
             raise OutputValidationError(
-                f"output publication failed ({error}); rollback failed ({rollback_error})"
+                f"output publication failed ({error}); backup preserved at {backup}; "
+                f"rollback failures: {'; '.join(rollback_failures)}"
             ) from error
-        finally:
-            shutil.rmtree(backup, ignore_errors=True)
+        shutil.rmtree(backup)
         raise OutputValidationError(f"output publication failed: {error}") from error
     shutil.rmtree(backup)
+
+
+def _rollback_publication(
+    staging: Path,
+    output_dir: Path,
+    backup: Path,
+    published: Sequence[str],
+    backed_up: Sequence[str],
+) -> list[str]:
+    failures: list[str] = []
+    blocked: set[str] = set()
+    for name in reversed(published):
+        try:
+            os.replace(output_dir / name, staging / name)
+        except OSError as error:
+            blocked.add(name)
+            failures.append(f"could not return published {name}: {error}")
+
+    for name in reversed(backed_up):
+        if name in blocked:
+            failures.append(f"original {name} remains in backup because destination is occupied")
+            continue
+        try:
+            os.replace(backup / name, output_dir / name)
+        except OSError as error:
+            failures.append(f"could not restore original {name}: {error}")
+    return failures
 
 
 def _validate_nonempty_file(path: Path) -> None:
