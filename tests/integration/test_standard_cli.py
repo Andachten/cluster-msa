@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 from cluster_msa.cli import main
@@ -366,3 +367,36 @@ def test_standard_keep_work_failure_marks_staging_manifest_failed(
     document = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert (document["status"], document["failure_stage"]) == ("failed", "work_retention")
     assert document["error"] == "work retention failed"
+
+
+def test_standard_partial_retention_failure_marks_both_manifests_failed(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, monkeypatch
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    output = tmp_path / "output"
+    tmp_dir = tmp_path / "tmp"
+    real_copytree = shutil.copytree
+
+    def copy_then_fail(source, destination, *args, **kwargs):
+        real_copytree(source, destination, *args, **kwargs)
+        raise OSError("post-copy retention failure")
+
+    monkeypatch.setattr("cluster_msa.standard.shutil.copytree", copy_then_fail)
+    result = main(
+        [
+            "standard", "--input", str(input_path), "--output-dir", str(output),
+            "--db-path", str(fake_database), "--colabfold-search",
+            str(fake_colabfold_search.executable), "--tmp-dir", str(tmp_dir), "--keep-work",
+        ]
+    )
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list((tmp_dir / "cluster-msa-work").rglob("run_manifest.json"))
+    assert len(manifests) == 2
+    for manifest in manifests:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        assert (document["status"], document["failure_stage"]) == (
+            "failed", "work_retention"
+        )

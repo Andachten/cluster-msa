@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -238,3 +239,34 @@ def test_accelerated_keep_work_failure_marks_staging_manifest_failed(
     document = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert (document["status"], document["failure_stage"]) == ("failed", "work_retention")
     assert document["error"] == "work retention failed"
+
+
+def test_accelerated_partial_retention_failure_marks_both_manifests_failed(
+    tmp_path: Path, fake_database, fake_colabfold_search, fake_mmseqs, monkeypatch
+):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    real_copytree = shutil.copytree
+    monkeypatch.setenv("FAKE_COLABFOLD_ADD_HIT", "1")
+
+    def copy_then_fail(source, destination, *args, **kwargs):
+        real_copytree(source, destination, *args, **kwargs)
+        raise OSError("post-copy retention failure")
+
+    monkeypatch.setattr("cluster_msa.accelerated.shutil.copytree", copy_then_fail)
+    result = main([*accelerated_args(
+        input_path, output, fake_database, fake_colabfold_search.executable,
+        fake_mmseqs.executable, work
+    ), "--keep-work"])
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list(work.rglob("run_manifest.json"))
+    assert len(manifests) == 2
+    for manifest in manifests:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        assert (document["status"], document["failure_stage"]) == (
+            "failed", "work_retention"
+        )

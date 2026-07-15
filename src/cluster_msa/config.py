@@ -71,6 +71,13 @@ def _required_path(value, name: str) -> Path:
         raise ConfigurationError(f"{name} must be a path") from error
 
 
+def _boolean_arg(args: argparse.Namespace, name: str, label: str) -> bool:
+    value = _arg(args, name, default=False)
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{label} flag must be boolean")
+    return value
+
+
 def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> RunConfig:
     mode = _arg(args, "mode")
     if mode not in ("standard", "accelerated"):
@@ -104,6 +111,9 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     gpus = _arg(args, "gpus")
     if gpus is not None and not isinstance(gpus, str):
         raise ConfigurationError("GPU IDs must be a string")
+    keep_work = _boolean_arg(args, "keep_work", "keep-work")
+    overwrite = _boolean_arg(args, "overwrite", "overwrite")
+    verbose = _boolean_arg(args, "verbose", "verbose")
 
     input_path = _required_path(_arg(args, "input", "input_path"), "input")
     if not input_path.is_file():
@@ -140,9 +150,9 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         af3_json=af3_json,
         tmp_dir=tmp_dir,
         work_dir=work_dir,
-        keep_work=bool(_arg(args, "keep_work", default=False)),
-        overwrite=bool(_arg(args, "overwrite", default=False)),
-        verbose=bool(_arg(args, "verbose", default=False)),
+        keep_work=keep_work,
+        overwrite=overwrite,
+        verbose=verbose,
         cluster_identity=identity,
         cluster_coverage=coverage,
         cluster_mode=cluster_mode,

@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from cluster_msa.errors import OutputValidationError
-from cluster_msa.manifest import mark_manifest_failed, write_manifest
+from cluster_msa.manifest import (
+    mark_manifest_failed,
+    mark_retention_manifests_failed,
+    write_manifest,
+)
 from cluster_msa.models import RunConfig, RunResult, Toolchain
 
 
@@ -290,6 +294,55 @@ def test_mark_manifest_failed_atomically_updates_only_diagnostic_status(tmp_path
         "error": "output publication failed",
     }
     assert "secret-value" not in path.read_text(encoding="utf-8")
+
+
+def test_mark_retention_manifests_failed_allows_missing_retained_manifest(tmp_path):
+    staging = tmp_path / "staging.json"
+    staging.write_text('{"status":"success"}\n', encoding="utf-8")
+    error = OutputValidationError("retention failed")
+
+    mark_retention_manifests_failed(staging, tmp_path / "missing.json", error)
+
+    assert json.loads(staging.read_text(encoding="utf-8"))["status"] == "failed"
+    assert not error.__notes__ if hasattr(error, "__notes__") else True
+
+
+def test_mark_retention_manifests_failed_notes_unsafe_retained_manifest(tmp_path):
+    staging = tmp_path / "staging.json"
+    staging.write_text('{"status":"success"}\n', encoding="utf-8")
+    target = tmp_path / "target.json"
+    target.write_text('{"status":"success"}\n', encoding="utf-8")
+    retained = tmp_path / "retained.json"
+    retained.symlink_to(target)
+    error = OutputValidationError("retention failed")
+
+    mark_retention_manifests_failed(staging, retained, error)
+
+    assert json.loads(staging.read_text(encoding="utf-8"))["status"] == "failed"
+    assert json.loads(target.read_text(encoding="utf-8"))["status"] == "success"
+    assert not retained.exists()
+    assert (tmp_path / "retained.json.failed-unusable").is_symlink()
+    assert any("retained manifest" in note for note in error.__notes__)
+
+
+def test_mark_retention_manifests_failed_preserves_primary_when_retained_marking_fails(
+    tmp_path,
+):
+    staging = tmp_path / "staging.json"
+    staging.write_text('{"status":"success"}\n', encoding="utf-8")
+    retained = tmp_path / "retained.json"
+    retained.write_text("invalid json\n", encoding="utf-8")
+    error = OutputValidationError("primary retention failure")
+
+    mark_retention_manifests_failed(staging, retained, error)
+
+    assert str(error) == "primary retention failure"
+    assert json.loads(staging.read_text(encoding="utf-8"))["status"] == "failed"
+    assert not retained.exists()
+    assert (tmp_path / "retained.json.failed-unusable").read_text(encoding="utf-8") == (
+        "invalid json\n"
+    )
+    assert any("cannot mark run manifest failed" in note for note in error.__notes__)
 
 
 @pytest.mark.parametrize(

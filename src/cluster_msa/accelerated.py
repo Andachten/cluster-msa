@@ -10,7 +10,11 @@ from cluster_msa.af3 import write_af3_json
 from cluster_msa.clustering import cluster_sequences
 from cluster_msa.compact_db import build_compact_database, search_compact_database
 from cluster_msa.errors import ConfigurationError, OutputValidationError
-from cluster_msa.manifest import mark_manifest_failed, write_manifest
+from cluster_msa.manifest import (
+    mark_manifest_failed,
+    mark_retention_manifests_failed,
+    write_manifest,
+)
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.standard import _preflight_destination, run_full_database_search
@@ -155,12 +159,11 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 retained_manifest = retained / "run_manifest.json"
             except OSError as caught:
                 error = OutputValidationError(f"cannot retain accelerated work: {caught}")
-                try:
-                    mark_manifest_failed(
-                        staging / "run_manifest.json", "work_retention", error
-                    )
-                except OutputValidationError as diagnostic_error:
-                    error.add_note(str(diagnostic_error))
+                mark_retention_manifests_failed(
+                    staging / "run_manifest.json",
+                    retained / "run_manifest.json",
+                    error,
+                )
                 raise error from caught
         try:
             publish_outputs(

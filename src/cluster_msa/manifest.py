@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -130,6 +131,44 @@ def mark_manifest_failed(path: Path, stage: str, error: Exception) -> None:
         )
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as caught:
         raise OutputValidationError(f"cannot mark run manifest failed: {path}") from caught
+
+
+def mark_retention_manifests_failed(
+    staging_manifest: Path, retained_manifest: Path, error: OutputValidationError
+) -> None:
+    try:
+        mark_manifest_failed(staging_manifest, "work_retention", error)
+    except OutputValidationError as diagnostic_error:
+        error.add_note(str(diagnostic_error))
+
+    try:
+        mode = retained_manifest.lstat().st_mode
+    except FileNotFoundError:
+        return
+    except OSError as caught:
+        error.add_note(f"cannot inspect retained manifest: {retained_manifest}: {caught}")
+        return
+    if not stat.S_ISREG(mode):
+        error.add_note(f"retained manifest is not a regular file: {retained_manifest}")
+        _quarantine_retained_manifest(retained_manifest, error)
+        return
+    try:
+        mark_manifest_failed(retained_manifest, "work_retention", error)
+    except OutputValidationError as diagnostic_error:
+        error.add_note(str(diagnostic_error))
+        _quarantine_retained_manifest(retained_manifest, error)
+
+
+def _quarantine_retained_manifest(
+    retained_manifest: Path, error: OutputValidationError
+) -> None:
+    quarantine = retained_manifest.with_name(f"{retained_manifest.name}.failed-unusable")
+    try:
+        os.replace(retained_manifest, quarantine)
+    except OSError as caught:
+        error.add_note(
+            f"cannot quarantine retained manifest: {retained_manifest}: {caught}"
+        )
 
 
 def _validate_timing(

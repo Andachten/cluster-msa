@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Sequence
 
 from cluster_msa.errors import OutputValidationError
-from cluster_msa.manifest import mark_manifest_failed, write_manifest
+from cluster_msa.manifest import (
+    mark_manifest_failed,
+    mark_retention_manifests_failed,
+    write_manifest,
+)
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.tools import get_tool_version, run_command
@@ -95,12 +99,11 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
                 shutil.copytree(staging, retained)
             except OSError as caught:
                 error = OutputValidationError(f"cannot retain standard work: {caught}")
-                try:
-                    mark_manifest_failed(
-                        staging / "run_manifest.json", "work_retention", error
-                    )
-                except OutputValidationError as diagnostic_error:
-                    error.add_note(str(diagnostic_error))
+                mark_retention_manifests_failed(
+                    staging / "run_manifest.json",
+                    retained / "run_manifest.json",
+                    error,
+                )
                 raise error from caught
             retained_manifest = retained / "run_manifest.json"
         try:

@@ -166,6 +166,12 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
         ("gpu", "true", "GPU flag"),
         ("af3_json", 0, "AF3 flag"),
         ("af3_json", "false", "AF3 flag"),
+        ("keep_work", 1, "keep-work flag"),
+        ("keep_work", "false", "keep-work flag"),
+        ("overwrite", 0, "overwrite flag"),
+        ("overwrite", "false", "overwrite flag"),
+        ("verbose", 1, "verbose flag"),
+        ("verbose", "false", "verbose flag"),
     ],
 )
 def test_build_run_config_rejects_invalid_typed_values(tmp_path, name, value, message):
@@ -183,6 +189,21 @@ def test_build_run_config_rejects_invalid_typed_values(tmp_path, name, value, me
 
     with pytest.raises(ConfigurationError, match=message):
         build_run_config(arguments, {})
+
+
+def test_build_run_config_defaults_absent_control_flags_to_false(tmp_path):
+    search = executable(tmp_path / "search")
+    database = tmp_path / "database"
+    database.mkdir()
+    (database / "uniref30_component").write_text("", encoding="utf-8")
+    (database / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    arguments = args_for(tmp_path, colabfold_search=str(search), db=database)
+    for name in ("keep_work", "overwrite", "verbose"):
+        delattr(arguments, name)
+
+    config = build_run_config(arguments, {})
+
+    assert (config.keep_work, config.overwrite, config.verbose) == (False, False, False)
 
 
 @pytest.mark.parametrize(
