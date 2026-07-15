@@ -258,6 +258,64 @@ def test_split_combined_msa_preserves_complete_lines_and_crlf(tmp_path: Path) ->
     )
 
 
+@pytest.mark.parametrize("first_ending", [b"", b"\n", b"\r\n"])
+def test_split_combined_msa_splits_nul_delimited_entries_and_preserves_content(
+    tmp_path: Path, first_ending: bytes
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    one = b">one description\nACd-E\n>hit-one extra\nFG-HI" + first_ending
+    two = b">two\r\nFGHI\r\n>hit-two\r\nKLMN\r\n"
+    combined.write_bytes(one + b"\x00" + two + b"\x00")
+
+    split_combined_msa(combined, RECORDS, tmp_path / "output")
+
+    assert (tmp_path / "output" / "one.a3m").read_bytes() == one
+    assert (tmp_path / "output" / "two.a3m").read_bytes() == two
+
+
+def test_split_combined_msa_rejects_unknown_nul_entry_without_partial_outputs(
+    tmp_path: Path,
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    combined.write_bytes(
+        b">one\nACDE\n>hit-one\nKLMN\n\x00"
+        b">unknown\nAAAA\n>hit-unknown\nPQRS\n\x00"
+        b">two\nFGHI\n>hit-two\nKLMN\n\x00"
+    )
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(OutputValidationError, match="unknown query"):
+        split_combined_msa(combined, RECORDS, output_dir)
+
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        (b"", "empty"),
+        (b"ACDE\n>hit\nFGHI\n", "header"),
+        (b">\nACDE\n", "header"),
+        (b">one\nACDE\n>hit\nFGHI\n", "duplicate"),
+    ],
+)
+def test_split_combined_msa_rejects_invalid_nul_entries_without_partial_outputs(
+    tmp_path: Path, entry: bytes, message: str
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    combined.write_bytes(
+        b">one\nACDE\n>hit-one\nKLMN\n\x00"
+        + entry
+        + b"\x00>two\nFGHI\n>hit-two\nKLMN\n"
+    )
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(OutputValidationError, match=message):
+        split_combined_msa(combined, RECORDS, output_dir)
+
+    assert not output_dir.exists()
+
+
 def test_split_combined_msa_rejects_empty_hit_record_without_outputs(tmp_path: Path) -> None:
     combined = tmp_path / "combined.a3m"
     combined.write_text(

@@ -93,14 +93,73 @@ def split_combined_msa(
     normalized_records = _validated_records(records)
     _require_regular_nonempty(combined, OutputValidationError, "combined MSA")
     try:
-        lines = combined.read_bytes().splitlines(keepends=True)
-        decoded_lines = [line.decode("utf-8") for line in lines]
+        content = combined.read_bytes()
     except (OSError, UnicodeError) as error:
         raise OutputValidationError(f"cannot read combined MSA: {combined}: {error}") from error
-    if not b"".join(lines).strip():
+    if not content.strip():
         raise OutputValidationError(f"combined MSA is empty: {combined}")
 
     expected_ids = {record.id for record in normalized_records}
+    if b"\x00" in content:
+        blocks = _parse_nul_entries(content, expected_ids)
+    else:
+        blocks = _parse_text_blocks(content, expected_ids)
+
+    missing = expected_ids - blocks.keys()
+    if missing:
+        raise OutputValidationError(f"combined MSA has missing queries: {', '.join(sorted(missing))}")
+    rendered: dict[str, bytes] = {}
+    for record in normalized_records:
+        block = blocks[record.id]
+        block_lines = _decode_block_lines(block, record.id)
+        if sum(line.startswith(">") for line in block_lines) < 2:
+            raise OutputValidationError(f"query-only MSA is not allowed: {record.id}")
+        _validate_a3m_block(block_lines, record.id)
+        rendered[record.id] = block
+
+    _prepare_output_dir(output_dir, expected_ids)
+    try:
+        for record in normalized_records:
+            (output_dir / f"{record.id}.a3m").write_bytes(rendered[record.id])
+    except OSError as error:
+        raise OutputValidationError(f"cannot write split MSA outputs: {output_dir}: {error}") from error
+
+
+def _parse_nul_entries(content: bytes, expected_ids: set[str]) -> dict[str, bytes]:
+    entries = content.split(b"\x00")
+    if entries[-1] == b"":
+        entries.pop()
+    parsed: dict[str, bytes] = {}
+    for entry_number, entry in enumerate(entries, start=1):
+        if not entry.strip():
+            raise OutputValidationError(f"empty combined MSA entry: {entry_number}")
+        lines = _decode_block_lines(entry, f"entry {entry_number}")
+        first_header = next(
+            (line for line in lines if line.startswith(">")),
+            None,
+        )
+        if first_header is None or any(
+            line.strip() and not line.startswith(("#", ">"))
+            for line in lines[: lines.index(first_header)]
+        ):
+            raise OutputValidationError(
+                f"combined MSA entry {entry_number} has no valid first header"
+            )
+        header = first_header[1:].strip()
+        if not header:
+            raise OutputValidationError(f"combined MSA entry {entry_number} has an empty header")
+        query_id = header.split(maxsplit=1)[0]
+        if query_id not in expected_ids:
+            raise OutputValidationError(f"combined MSA entry has unknown query: {query_id}")
+        if query_id in parsed:
+            raise OutputValidationError(f"duplicate query block: {query_id}")
+        parsed[query_id] = entry
+    return parsed
+
+
+def _parse_text_blocks(content: bytes, expected_ids: set[str]) -> dict[str, bytes]:
+    lines = content.splitlines(keepends=True)
+    decoded_lines = _decode_block_lines(content, "text output")
     blocks: dict[str, list[bytes]] = {}
     current_id: str | None = None
     for line_number, (line, decoded_line) in enumerate(zip(lines, decoded_lines), start=1):
@@ -120,27 +179,14 @@ def split_combined_msa(
                 )
             continue
         blocks[current_id].append(line)
+    return {query_id: b"".join(block) for query_id, block in blocks.items()}
 
-    missing = expected_ids - blocks.keys()
-    if missing:
-        raise OutputValidationError(f"combined MSA has missing queries: {', '.join(sorted(missing))}")
-    rendered: dict[str, bytes] = {}
-    for record in normalized_records:
-        content = b"".join(blocks[record.id])
-        if not content.strip():
-            raise OutputValidationError(f"empty query block: {record.id}")
-        block_lines = [line.decode("utf-8") for line in blocks[record.id]]
-        if sum(line.startswith(">") for line in block_lines) < 2:
-            raise OutputValidationError(f"query-only MSA is not allowed: {record.id}")
-        _validate_a3m_block(block_lines, record.id)
-        rendered[record.id] = content
 
-    _prepare_output_dir(output_dir, expected_ids)
+def _decode_block_lines(block: bytes, label: str) -> list[str]:
     try:
-        for record in normalized_records:
-            (output_dir / f"{record.id}.a3m").write_bytes(rendered[record.id])
-    except OSError as error:
-        raise OutputValidationError(f"cannot write split MSA outputs: {output_dir}: {error}") from error
+        return [line.decode("utf-8") for line in block.splitlines(keepends=True)]
+    except UnicodeError as error:
+        raise OutputValidationError(f"invalid UTF-8 in combined MSA {label}") from error
 
 
 def search_compact_database(
