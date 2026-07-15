@@ -60,6 +60,15 @@ def _arg(args: argparse.Namespace, *names: str, default=None):
     return default
 
 
+def _required_path(value, name: str) -> Path:
+    if value is None:
+        raise ConfigurationError(f"{name} path is required")
+    try:
+        return Path(value).expanduser()
+    except TypeError as error:
+        raise ConfigurationError(f"{name} must be a path") from error
+
+
 def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> RunConfig:
     mode = _arg(args, "mode")
     if mode not in ("standard", "accelerated"):
@@ -73,24 +82,24 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     if not 0 < identity <= 1 or not 0 < coverage <= 1 or cluster_mode < 0:
         raise ConfigurationError("cluster parameters are invalid")
 
-    input_path = Path(_arg(args, "input", "input_path")).expanduser()
+    input_path = _required_path(_arg(args, "input", "input_path"), "input")
     if not input_path.is_file():
         raise ConfigurationError(f"input is not a file: {input_path}")
-    output_dir = Path(_arg(args, "output", "output_dir")).expanduser()
+    output_dir = _required_path(_arg(args, "output", "output_dir"), "output")
     if output_dir.exists() and not output_dir.is_dir():
         raise ConfigurationError(f"output is not a directory: {output_dir}")
 
     search = _resolve_required_with_environment(
-        _arg(args, "colabfold_search"), environ, "CLUSTER_MSA_COLABFOLD_SEARCH", "colabfold_search"
+        _arg(args, "colabfold_search"), environ, "COLABFOLD_SEARCH", "colabfold_search"
     )
     mmseqs_explicit = _arg(args, "mmseqs")
-    mmseqs = _resolve_with_environment(mmseqs_explicit, environ, "CLUSTER_MSA_MMSEQS", "mmseqs")
+    mmseqs = _resolve_with_environment(mmseqs_explicit, environ, "MMSEQS", "mmseqs")
     if mode == "accelerated" and mmseqs is None:
         raise ConfigurationError("accelerated mode requires mmseqs")
 
     gpu_value = _arg(args, "gpu")
-    gpu = False if _arg(args, "no_gpu", default=False) else bool(gpu_value)
-    gpus = _arg(args, "gpus") or "0"
+    gpu = False if _arg(args, "no_gpu", default=False) else gpu_value is not False
+    gpus = _arg(args, "gpus") or ""
     return RunConfig(
         mode=mode,
         input_path=input_path,
@@ -101,8 +110,8 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         gpu=gpu,
         gpus=gpus,
         af3_json=bool(_arg(args, "af3_json", default=False)),
-        tmp_dir=Path(_arg(args, "tmp", "tmp_dir") or ".cluster-msa-tmp"),
-        work_dir=Path(_arg(args, "work", "work_dir") or ".cluster-msa-work"),
+        tmp_dir=Path(_arg(args, "tmp", "tmp_dir") or ".cluster-msa-tmp").expanduser(),
+        work_dir=Path(_arg(args, "work", "work_dir") or ".cluster-msa-work").expanduser(),
         keep_work=bool(_arg(args, "keep_work", default=False)),
         overwrite=bool(_arg(args, "overwrite", default=False)),
         verbose=bool(_arg(args, "verbose", default=False)),

@@ -16,8 +16,8 @@ def run_command(
     verbose: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     child_env = os.environ.copy()
-    child_env.pop("CUDA_VISIBLE_DEVICES", None)
     if env is not None:
+        child_env.pop("CUDA_VISIBLE_DEVICES", None)
         child_env.update(env)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
@@ -35,7 +35,7 @@ def run_command(
         print(result.stderr, end="")
     if result.returncode:
         raise ExternalToolError(
-            f"{stage}: failed ({result.returncode}) for {command[0]}; log: {log_path}"
+            f"{stage}: {command[0]} failed with return code {result.returncode}; log: {log_path}"
         )
     return result
 

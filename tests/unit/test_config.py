@@ -115,13 +115,14 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
     monkeypatch.setenv("PATH", str(tmp_path))
     config = build_run_config(
         args_for(tmp_path),
-        {"CLUSTER_MSA_DB": str(db), "CLUSTER_MSA_COLABFOLD_SEARCH": str(search)},
+        {"CLUSTER_MSA_DB": str(db), "COLABFOLD_SEARCH": str(search)},
     )
 
     assert config.toolchain.colabfold_search == search
     assert config.toolchain.mmseqs is None
     assert config.threads == 1
-    assert config.gpus == "0"
+    assert config.gpu is True
+    assert config.gpus == ""
     assert config.tmp_dir == Path(".cluster-msa-tmp")
     assert config.work_dir == Path(".cluster-msa-work")
 
@@ -132,8 +133,58 @@ def test_build_run_config_requires_mmseqs_for_accelerated(tmp_path, monkeypatch)
     with pytest.raises(ConfigurationError, match="mmseqs"):
         build_run_config(
             args_for(tmp_path, mode="accelerated"),
-            {"CLUSTER_MSA_COLABFOLD_SEARCH": str(search)},
+            {"COLABFOLD_SEARCH": str(search)},
         )
+
+
+def test_build_run_config_tool_arguments_override_documented_environment(tmp_path):
+    explicit_search = executable(tmp_path / "explicit-search")
+    explicit_mmseqs = executable(tmp_path / "explicit-mmseqs")
+    environment_search = executable(tmp_path / "environment-search")
+    environment_mmseqs = executable(tmp_path / "environment-mmseqs")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+
+    config = build_run_config(
+        args_for(
+            tmp_path,
+            mode="accelerated",
+            colabfold_search=str(explicit_search),
+            mmseqs=str(explicit_mmseqs),
+        ),
+        {
+            "CLUSTER_MSA_DB": str(db),
+            "COLABFOLD_SEARCH": str(environment_search),
+            "MMSEQS": str(environment_mmseqs),
+        },
+    )
+
+    assert config.toolchain.colabfold_search == explicit_search
+    assert config.toolchain.mmseqs == explicit_mmseqs
+
+
+def test_build_run_config_uses_documented_tool_environment(tmp_path, monkeypatch):
+    search = executable(tmp_path / "environment-search")
+    mmseqs = executable(tmp_path / "environment-mmseqs")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+
+    config = build_run_config(
+        args_for(tmp_path, mode="accelerated"),
+        {
+            "CLUSTER_MSA_DB": str(db),
+            "COLABFOLD_SEARCH": str(search),
+            "MMSEQS": str(mmseqs),
+        },
+    )
+
+    assert config.toolchain.colabfold_search == search
+    assert config.toolchain.mmseqs == mmseqs
 
 
 @pytest.mark.parametrize(
@@ -151,6 +202,45 @@ def test_build_run_config_rejects_invalid_values(tmp_path, field, value):
         build_run_config(args_for(tmp_path, **{field: value}), {})
 
 
+@pytest.mark.parametrize("field", ["input", "output"])
+def test_build_run_config_reports_missing_required_paths(tmp_path, field):
+    with pytest.raises(ConfigurationError, match=field):
+        build_run_config(args_for(tmp_path, **{field: None}), {})
+
+
+def test_build_run_config_expands_all_user_paths(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    input_path = home / "input.csv"
+    input_path.write_text("id,sequence\nexample,ACDE\n", encoding="utf-8")
+    executable(home / "search")
+    db = home / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    config = build_run_config(
+        args_for(
+            tmp_path,
+            input=Path("~/input.csv"),
+            output=Path("~/output"),
+            db=Path("~/db"),
+            colabfold_search="~/search",
+            tmp=Path("~/tmp"),
+            work=Path("~/work"),
+        ),
+        {},
+    )
+
+    assert config.input_path == home / "input.csv"
+    assert config.output_dir == home / "output"
+    assert config.db_path == home / "db"
+    assert config.toolchain.colabfold_search == home / "search"
+    assert config.tmp_dir == home / "tmp"
+    assert config.work_dir == home / "work"
+
+
 def test_build_run_config_gpu_flag_and_environment_precedence(tmp_path, monkeypatch):
     search = executable(tmp_path / "search")
     db = tmp_path / "db"
@@ -161,7 +251,7 @@ def test_build_run_config_gpu_flag_and_environment_precedence(tmp_path, monkeypa
 
     config = build_run_config(
         args_for(tmp_path, threads=2, gpu=True, gpus="2,3"),
-        {"CLUSTER_MSA_DB": str(db), "CLUSTER_MSA_COLABFOLD_SEARCH": str(search)},
+        {"CLUSTER_MSA_DB": str(db), "COLABFOLD_SEARCH": str(search)},
     )
 
     assert config.threads == 2
@@ -178,7 +268,7 @@ def test_build_run_config_honors_no_gpu_flag(tmp_path):
     args = args_for(tmp_path, gpu=None, no_gpu=True)
     config = build_run_config(
         args,
-        {"CLUSTER_MSA_DB": str(db), "CLUSTER_MSA_COLABFOLD_SEARCH": str(search)},
+        {"CLUSTER_MSA_DB": str(db), "COLABFOLD_SEARCH": str(search)},
     )
 
     assert config.gpu is False

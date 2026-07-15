@@ -29,6 +29,16 @@ def test_run_command_logs_command_and_output_without_mutating_parent_env(tmp_pat
     assert "2" in contents
 
 
+def test_run_command_gpu_with_empty_devices_preserves_inherited_visibility(tmp_path, monkeypatch):
+    tool = script(tmp_path / "env-tool", 'printf "%s" "$CUDA_VISIBLE_DEVICES"')
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "parent")
+
+    result = run_command([str(tool)], stage="gpu-test", log_path=tmp_path / "run.log", env=None)
+
+    assert result.stdout == "parent"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "parent"
+
+
 def test_run_command_cpu_removes_inherited_gpu_environment(tmp_path, monkeypatch):
     tool = script(tmp_path / "env-tool", 'printf "%s" "${CUDA_VISIBLE_DEVICES-unset}"')
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "parent")
@@ -43,9 +53,14 @@ def test_run_command_raises_typed_error_and_logs_failure(tmp_path):
     tool = script(tmp_path / "fail", 'printf "bad output\\n"; exit 7')
     log = tmp_path / "failure.log"
 
-    with pytest.raises(ExternalToolError, match="stage: failed"):
+    with pytest.raises(ExternalToolError) as error:
         run_command([str(tool)], stage="stage", log_path=log)
 
+    message = str(error.value)
+    assert "stage" in message
+    assert tool.name in message
+    assert "return code 7" in message
+    assert str(log) in message
     assert "bad output" in log.read_text(encoding="utf-8")
 
 
