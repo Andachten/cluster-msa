@@ -380,6 +380,90 @@ def test_publish_lock_failure_is_typed_and_leaves_output_untouched(
     assert not (output / "second.a3m").exists()
 
 
+def test_publish_unlock_failure_does_not_mask_body_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    (output / "first.a3m").write_text("old first", encoding="utf-8")
+    (output / "second.a3m").write_text("old second", encoding="utf-8")
+    real_flock = __import__("fcntl").flock
+    real_replace = os.replace
+
+    def fail_unlock(file_descriptor: int, operation: int) -> None:
+        if operation == __import__("fcntl").LOCK_UN:
+            raise OSError("unlock denied")
+        real_flock(file_descriptor, operation)
+
+    def fail_second_publication(source: Path, destination: Path) -> None:
+        if source.name == "second.a3m" and source.parent.name.startswith(
+            ".cluster-msa-publish-"
+        ):
+            raise OSError("publication body failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr("cluster_msa.output.fcntl.flock", fail_unlock)
+    monkeypatch.setattr(os, "replace", fail_second_publication)
+
+    with pytest.warns(RuntimeWarning, match="unlock denied"):
+        with pytest.raises(OutputValidationError) as captured:
+            publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    assert "publication body failed" in str(captured.value)
+    assert "cannot release publication lock" not in str(captured.value)
+    assert any("unlock denied" in note for note in captured.value.__notes__)
+
+
+def test_publish_unlock_failure_is_nonfatal_and_releases_thread_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output"
+    first_staging = tmp_path / "staging-first"
+    second_staging = tmp_path / "staging-second"
+    first_staging.mkdir()
+    second_staging.mkdir()
+    write_valid_outputs(first_staging)
+    write_valid_outputs(second_staging)
+    (second_staging / "first.a3m").write_text(">query\nSECOND\n", encoding="utf-8")
+    real_flock = __import__("fcntl").flock
+    unlock_failures = 0
+
+    def fail_first_unlock(file_descriptor: int, operation: int) -> None:
+        nonlocal unlock_failures
+        if operation == __import__("fcntl").LOCK_UN and unlock_failures == 0:
+            unlock_failures += 1
+            raise OSError("unlock denied")
+        real_flock(file_descriptor, operation)
+
+    monkeypatch.setattr("cluster_msa.output.fcntl.flock", fail_first_unlock)
+
+    with pytest.warns(RuntimeWarning, match="unlock denied"):
+        publish_outputs(first_staging, output, RECORDS, af3_json=False, overwrite=False)
+
+    completed = threading.Event()
+    errors = []
+
+    def publish_again() -> None:
+        try:
+            publish_outputs(second_staging, output, RECORDS, af3_json=False, overwrite=True)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            completed.set()
+
+    thread = threading.Thread(target=publish_again)
+    thread.start()
+    thread.join(2)
+
+    assert completed.is_set()
+    assert not thread.is_alive()
+    assert errors == []
+    assert (output / "first.a3m").read_text(encoding="utf-8") == ">query\nSECOND\n"
+
+
 def test_publish_copy_failure_is_typed_and_leaves_output_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

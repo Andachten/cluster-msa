@@ -6,6 +6,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -138,16 +139,32 @@ def _publication_lock(output_dir: Path) -> Iterator[None]:
             raise OutputValidationError(
                 f"cannot acquire publication lock for {output_dir}: {error}"
             ) from error
+        body_error: BaseException | None = None
         try:
             yield
+        except BaseException as error:
+            body_error = error
+            raise
         finally:
+            unlock_error: OSError | None = None
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                lock_file.close()
             except OSError as error:
-                raise OutputValidationError(
-                    f"cannot release publication lock for {output_dir}: {error}"
-                ) from error
+                unlock_error = error
+            finally:
+                try:
+                    lock_file.close()
+                except OSError as error:
+                    warnings.warn(
+                        f"cannot close publication lock for {output_dir}: {error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            if unlock_error is not None:
+                message = f"cannot explicitly unlock publication lock for {output_dir}: {unlock_error}"
+                if body_error is not None and hasattr(body_error, "add_note"):
+                    body_error.add_note(message)
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
 
 
 def _publish_transaction(
