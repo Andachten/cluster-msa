@@ -27,9 +27,7 @@ def load_sequences(path: Path) -> tuple[SequenceRecord, ...]:
                 raise InputValidationError(f"{path}: empty file") from error
 
             if header != ["id", "sequence"]:
-                raise InputValidationError(
-                    f"{path}: header must contain exactly id,sequence"
-                )
+                raise InputValidationError(f"{path}: header must contain exactly id,sequence")
 
             for row in reader:
                 row_number = reader.line_num
@@ -54,6 +52,10 @@ def load_sequences(path: Path) -> tuple[SequenceRecord, ...]:
                 if ":" in raw_sequence:
                     raise InputValidationError(
                         f"{path}: row {row_number}: sequence contains a colon"
+                    )
+                if not raw_sequence.isascii():
+                    raise InputValidationError(
+                        f"{path}: row {row_number}: sequence contains an invalid residue"
                     )
 
                 sequence = raw_sequence.upper()

@@ -31,9 +31,7 @@ def test_load_sequences_preserves_order_strips_cells_and_uppercases(tmp_path: Pa
     "header",
     ["sequence,id", "id", "id,sequence,description"],
 )
-def test_load_sequences_rejects_wrong_or_additional_header(
-    tmp_path: Path, header: str
-) -> None:
+def test_load_sequences_rejects_wrong_or_additional_header(tmp_path: Path, header: str) -> None:
     path = write_csv(tmp_path, f"{header}\nexample,ACDE\n")
 
     assert_invalid(path, "header")
@@ -68,6 +66,12 @@ def test_load_sequences_rejects_invalid_residue_without_echoing_sequence(tmp_pat
     assert invalid_sequence not in str(error.value)
 
 
+def test_load_sequences_rejects_non_ascii_residues(tmp_path: Path) -> None:
+    path = write_csv(tmp_path, "id,sequence\nexample,AıſE\n")
+
+    assert_invalid(path, r"inputs\.csv.*row 2.*residue")
+
+
 def test_load_sequences_rejects_empty_file(tmp_path: Path) -> None:
     path = write_csv(tmp_path, "")
 
@@ -88,9 +92,7 @@ def test_load_sequences_rejects_blank_rows(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("sequence", ["AC DE", "AC\tDE"])
-def test_load_sequences_rejects_internal_sequence_whitespace(
-    tmp_path: Path, sequence: str
-) -> None:
+def test_load_sequences_rejects_internal_sequence_whitespace(tmp_path: Path, sequence: str) -> None:
     path = write_csv(tmp_path, f"id,sequence\nexample,{sequence}\n")
 
     assert_invalid(path, r"inputs\.csv.*row 2.*whitespace")

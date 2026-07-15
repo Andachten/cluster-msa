@@ -75,6 +75,9 @@ def test_models_are_frozen() -> None:
     with pytest.raises(FrozenInstanceError):
         record.id = "changed"
 
+    for model in (Toolchain, RunConfig, ClusterResult, RunResult):
+        assert model.__dataclass_params__.frozen
+
 
 def test_run_config_defaults_and_path_annotations() -> None:
     config_fields = {field.name: field for field in fields(RunConfig)}
