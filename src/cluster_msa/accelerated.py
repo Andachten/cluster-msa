@@ -1,0 +1,154 @@
+import shutil
+import tempfile
+from dataclasses import replace
+from pathlib import Path
+from typing import Sequence
+
+from cluster_msa.af3 import write_af3_json
+from cluster_msa.clustering import cluster_sequences
+from cluster_msa.compact_db import build_compact_database, search_compact_database
+from cluster_msa.errors import ConfigurationError, OutputValidationError
+from cluster_msa.models import RunConfig, RunResult, SequenceRecord
+from cluster_msa.output import publish_outputs, staged_output, validate_outputs
+from cluster_msa.standard import _preflight_destination, run_full_database_search
+
+
+def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> RunResult:
+    if config.mode != "accelerated":
+        raise ValueError("run_accelerated requires accelerated mode")
+    if config.toolchain.mmseqs is None:
+        raise ConfigurationError("accelerated mode requires mmseqs")
+    if config.work_dir.resolve().is_relative_to(config.output_dir.resolve()):
+        raise ConfigurationError("work directory must be outside output directory")
+    _preflight_destination(config.output_dir, config.overwrite)
+    try:
+        config.work_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix="accelerated-", dir=config.work_dir))
+    except OSError as error:
+        raise OutputValidationError(f"cannot create work directory: {config.work_dir}") from error
+
+    with staged_output(config.output_dir, run_dir) as staging:
+        log_path = staging / "run.log"
+        _log(log_path, f"run directory: {run_dir}")
+        _log(log_path, "phase 1: cluster sequences")
+        clusters = cluster_sequences(
+            records,
+            mmseqs=config.toolchain.mmseqs,
+            work_dir=run_dir / "clustering",
+            tmp_dir=config.tmp_dir,
+            min_seq_id=config.cluster_identity,
+            coverage=config.cluster_coverage,
+            cluster_mode=config.cluster_mode,
+            threads=config.threads,
+            log_path=log_path,
+        )
+        representatives = clusters.representatives
+        nonrepresentatives = tuple(record for record, _ in clusters.nonrepresentatives)
+        fallback_reason = None
+
+        if not nonrepresentatives:
+            fallback_reason = "no_non_representatives"
+            _log(log_path, f"fallback_reason: {fallback_reason}")
+            _log(log_path, "standard fallback: searching original full validated records")
+            run_full_database_search(
+                records,
+                staging / "canonical-input.csv",
+                staging,
+                config,
+                log_path,
+            )
+        else:
+            rep_dir = run_dir / "representatives"
+            nonrep_dir = run_dir / "nonrepresentatives"
+            _log(log_path, "phase 2: full database search for representatives")
+            run_full_database_search(
+                representatives,
+                rep_dir / "representatives.csv",
+                rep_dir,
+                config,
+                log_path,
+            )
+            _log(log_path, "phase 3: build compact database")
+            compact_db = build_compact_database(
+                rep_dir, run_dir / "compact", config, log_path
+            )
+            _log(log_path, "phase 4: search nonrepresentatives")
+            isolated_config = replace(config, work_dir=run_dir / "nonrepresentative-search")
+            search_compact_database(
+                nonrepresentatives,
+                compact_db,
+                nonrep_dir,
+                isolated_config,
+                log_path,
+            )
+            if config.af3_json:
+                _log(log_path, "phase 5: write nonrepresentative AlphaFold3 JSON")
+                for record in nonrepresentatives:
+                    try:
+                        write_af3_json(
+                            record,
+                            nonrep_dir / f"{record.id}.a3m",
+                            nonrep_dir / f"{record.id}_data.json",
+                        )
+                    except (OSError, UnicodeError) as error:
+                        raise OutputValidationError(
+                            f"cannot write AlphaFold3 JSON for {record.id}: {error}"
+                        ) from error
+            _merge_expected(rep_dir, representatives, staging, config.af3_json, log_path)
+            _merge_expected(nonrep_dir, nonrepresentatives, staging, config.af3_json, log_path)
+
+        validate_outputs(staging, records, config.af3_json)
+        if config.keep_work:
+            try:
+                shutil.copytree(staging, run_dir / "retained")
+            except OSError as error:
+                raise OutputValidationError(f"cannot retain accelerated work: {error}") from error
+        publish_outputs(
+            staging,
+            config.output_dir,
+            records,
+            af3_json=config.af3_json,
+            overwrite=config.overwrite,
+        )
+
+    result = RunResult(
+        mode="accelerated",
+        expected_count=len(records),
+        generated_count=len(records),
+        representative_count=len(representatives),
+        nonrepresentative_count=len(nonrepresentatives),
+        fallback_reason=fallback_reason,
+    )
+    if not config.keep_work:
+        shutil.rmtree(run_dir)
+    return result
+
+
+def _merge_expected(
+    source: Path,
+    records: Sequence[SequenceRecord],
+    staging: Path,
+    af3_json: bool,
+    log_path: Path,
+) -> None:
+    names = [f"{record.id}.a3m" for record in records]
+    if af3_json:
+        names.extend(f"{record.id}_data.json" for record in records)
+    for name in names:
+        destination = staging / name
+        if destination.exists():
+            raise OutputValidationError(f"output collision while merging: {name}")
+        try:
+            shutil.copy2(source / name, destination)
+        except OSError as error:
+            raise OutputValidationError(f"cannot copy expected output {name}: {error}") from error
+        _log(log_path, f"copied: {name}")
+
+
+def _log(path: Path, message: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log:
+            log.write(f"{message}\n")
+    except OSError as error:
+        raise OutputValidationError(f"cannot write accelerated run log: {path}") from error

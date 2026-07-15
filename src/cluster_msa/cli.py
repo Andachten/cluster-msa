@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+from cluster_msa.accelerated import run_accelerated
 from cluster_msa.config import build_run_config
 from cluster_msa.errors import ClusterMsaError
 from cluster_msa.input import load_sequences
@@ -49,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         if config.mode == "standard":
             run_standard(config, records)
             return 0
-        raise NotImplementedError("accelerated mode is not implemented")
-    except (ClusterMsaError, NotImplementedError) as error:
+        run_accelerated(config, records)
+        return 0
+    except ClusterMsaError as error:
         print(f"cluster-msa: {error}", file=sys.stderr)
         return 1
