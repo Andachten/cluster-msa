@@ -36,3 +36,12 @@ CLUSTER_MSA_SMOKE_DB=/path/to/db CLUSTER_MSA_SMOKE_CPU=1 pytest -m smoke -q
 
 The test uses `colabfold_search` from `PATH` by default. Set the existing
 `COLABFOLD_SEARCH` environment variable to use a specific executable.
+`CLUSTER_MSA_SMOKE_TIMEOUT` controls the subprocess timeout in seconds and
+accepts a positive number; it defaults to 3600 seconds and terminates the CLI
+and its child processes on expiry. Relative `CLUSTER_MSA_SMOKE_DB` paths, and
+`COLABFOLD_SEARCH` values containing a directory separator, are resolved from
+the directory where `pytest` is started before the smoke subprocess changes
+directories. A bare `COLABFOLD_SEARCH` command name is resolved through `PATH`.
+If it is found, the smoke test passes its absolute path to the subprocess; if
+it is not found, the name is retained so the application reports its normal
+executable-path configuration error.
