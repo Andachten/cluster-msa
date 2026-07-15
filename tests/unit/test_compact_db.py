@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+import re
 
 import pytest
 
@@ -327,6 +329,108 @@ def test_split_combined_msa_rejects_empty_hit_record_without_outputs(tmp_path: P
         split_combined_msa(combined, RECORDS, output_dir)
 
     assert not output_dir.exists()
+
+
+def test_split_combined_msa_staging_write_failure_leaves_existing_outputs_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    combined.write_text(
+        ">one\nACDE\n>hit-one\nKLMN\n>two\nFGHI\n>hit-two\nPQRS\n", encoding="utf-8"
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "one.a3m").write_text("old one", encoding="utf-8")
+    (output_dir / "two.a3m").write_text("old two", encoding="utf-8")
+    real_write_bytes = Path.write_bytes
+    staged_writes = 0
+
+    def fail_second_write(path: Path, data: bytes) -> int:
+        nonlocal staged_writes
+        if path.name in {"one.a3m", "two.a3m"}:
+            staged_writes += 1
+            if staged_writes == 2:
+                raise OSError("staging write failed")
+        return real_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_second_write)
+
+    with pytest.raises(OutputValidationError, match="staging write failed"):
+        split_combined_msa(combined, RECORDS, output_dir)
+
+    assert (output_dir / "one.a3m").read_text(encoding="utf-8") == "old one"
+    assert (output_dir / "two.a3m").read_text(encoding="utf-8") == "old two"
+    assert not list(tmp_path.glob(".cluster-msa-split-*"))
+
+
+def test_split_combined_msa_publication_failure_restores_expected_and_preserves_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    combined.write_text(
+        ">one\nACDE\n>hit-one\nKLMN\n>two\nFGHI\n>hit-two\nPQRS\n", encoding="utf-8"
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "one.a3m").write_text("old one", encoding="utf-8")
+    (output_dir / "two.a3m").write_text("old two", encoding="utf-8")
+    (output_dir / "unknown.txt").write_text("keep", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_second_publication(source: Path, destination: Path) -> None:
+        if (
+            source.parent.name.startswith(".cluster-msa-split-")
+            and source.name == "two.a3m"
+            and destination == output_dir / "two.a3m"
+        ):
+            raise OSError("publication failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_second_publication)
+
+    with pytest.raises(OutputValidationError, match="publication failed"):
+        split_combined_msa(combined, RECORDS, output_dir)
+
+    assert (output_dir / "one.a3m").read_text(encoding="utf-8") == "old one"
+    assert (output_dir / "two.a3m").read_text(encoding="utf-8") == "old two"
+    assert (output_dir / "unknown.txt").read_text(encoding="utf-8") == "keep"
+    assert not list(tmp_path.glob(".cluster-msa-split-*"))
+
+
+def test_split_combined_msa_preserves_backup_when_publication_rollback_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    combined = tmp_path / "combined.a3m"
+    combined.write_text(
+        ">one\nACDE\n>hit-one\nKLMN\n>two\nFGHI\n>hit-two\nPQRS\n", encoding="utf-8"
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "one.a3m").write_text("old one", encoding="utf-8")
+    (output_dir / "two.a3m").write_text("old two", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_publication_and_restore(source: Path, destination: Path) -> None:
+        if (
+            source.parent.name.startswith(".cluster-msa-split-")
+            and source.name == "two.a3m"
+            and destination == output_dir / "two.a3m"
+        ):
+            raise OSError("publication failed")
+        if source.parent.name.startswith("publication-backup-") and source.name == "two.a3m":
+            raise OSError("restore failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_publication_and_restore)
+
+    with pytest.raises(OutputValidationError, match="backup preserved") as caught:
+        split_combined_msa(combined, RECORDS, output_dir)
+
+    backup_match = re.search(r"backup preserved at ([^;]+)", str(caught.value))
+    assert backup_match is not None
+    backup = Path(backup_match.group(1))
+    assert backup.is_dir()
+    assert (backup / "two.a3m").read_text(encoding="utf-8") == "old two"
 
 
 @pytest.mark.parametrize(

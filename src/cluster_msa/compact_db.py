@@ -1,4 +1,6 @@
+import shutil
 import stat
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -6,6 +8,7 @@ from cluster_msa.clustering import write_fasta
 from cluster_msa.errors import ConfigurationError, InputValidationError, OutputValidationError
 from cluster_msa.input import normalize_sequence_record
 from cluster_msa.models import RunConfig, SequenceRecord
+from cluster_msa.output import publish_outputs, validate_outputs
 from cluster_msa.tools import run_command
 
 
@@ -117,12 +120,27 @@ def split_combined_msa(
         _validate_a3m_block(block_lines, record.id)
         rendered[record.id] = block
 
-    _prepare_output_dir(output_dir, expected_ids)
+    staging = _create_split_staging(output_dir)
+    preserve_staging = False
     try:
         for record in normalized_records:
-            (output_dir / f"{record.id}.a3m").write_bytes(rendered[record.id])
+            (staging / f"{record.id}.a3m").write_bytes(rendered[record.id])
+        validate_outputs(staging, normalized_records, af3_json=False)
+        publish_outputs(
+            staging,
+            output_dir,
+            normalized_records,
+            af3_json=False,
+            overwrite=True,
+        )
+    except OutputValidationError as error:
+        preserve_staging = "backup preserved at" in str(error)
+        raise
     except OSError as error:
-        raise OutputValidationError(f"cannot write split MSA outputs: {output_dir}: {error}") from error
+        raise OutputValidationError(f"cannot stage split MSA outputs: {staging}: {error}") from error
+    finally:
+        if not preserve_staging:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _parse_nul_entries(content: bytes, expected_ids: set[str]) -> dict[str, bytes]:
@@ -346,25 +364,14 @@ def _require_regular_nonempty(path: Path, error_type: type[Exception], label: st
         raise error_type(f"cannot inspect {label}: {path}: {error}") from error
 
 
-def _prepare_output_dir(output_dir: Path, expected_ids: set[str]) -> None:
+def _create_split_staging(output_dir: Path) -> Path:
+    parent = output_dir.parent
     try:
         if output_dir.is_symlink() or (output_dir.exists() and not output_dir.is_dir()):
             raise OutputValidationError(f"output directory is not a directory: {output_dir}")
-        if output_dir.exists():
-            unexpected = [
-                path.name
-                for path in output_dir.iterdir()
-                if path.name not in {f"{record_id}.a3m" for record_id in expected_ids}
-                or path.is_symlink()
-                or not path.is_file()
-            ]
-            if unexpected:
-                raise OutputValidationError(
-                    f"output directory contains unexpected entries: {', '.join(sorted(unexpected))}"
-                )
-        else:
-            output_dir.mkdir(parents=True)
+        parent.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=".cluster-msa-split-", dir=parent))
     except OutputValidationError:
         raise
     except OSError as error:
-        raise OutputValidationError(f"cannot create output directory: {output_dir}: {error}") from error
+        raise OutputValidationError(f"cannot create split MSA staging directory: {parent}: {error}") from error
