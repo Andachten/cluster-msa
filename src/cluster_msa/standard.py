@@ -33,6 +33,10 @@ def run_full_database_search(
     environment = None if config.gpu and not config.gpus else {}
     if config.gpu and config.gpus:
         environment = {"CUDA_VISIBLE_DEVICES": config.gpus}
+    if not config.gpu and config.gpus:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"GPU IDs {config.gpus} ignored because GPU mode is disabled\n")
     run_command(
         command,
         stage="colabfold_search",

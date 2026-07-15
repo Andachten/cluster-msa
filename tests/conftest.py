@@ -12,6 +12,9 @@ class FakeColabfoldSearch:
     invocation_path: Path
 
     def invocation(self) -> dict:
+        return self.invocations()[-1]
+
+    def invocations(self) -> list[dict]:
         return json.loads(self.invocation_path.read_text(encoding="utf-8"))
 
 
@@ -40,10 +43,13 @@ if sys.argv[1:] == ["--version"]:
     print("fake-colabfold-search 1.0")
     raise SystemExit(0)
 
-pathlib.Path(os.environ["FAKE_COLABFOLD_RECORD"]).write_text(json.dumps({{
+record_path = pathlib.Path(os.environ["FAKE_COLABFOLD_RECORD"])
+history = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else []
+history.append({{
     "argv": sys.argv[1:],
     "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-}}), encoding="utf-8")
+}})
+record_path.write_text(json.dumps(history), encoding="utf-8")
 if os.environ.get("FAKE_COLABFOLD_FAIL") == "1":
     print("forced fake failure", file=sys.stderr)
     raise SystemExit(7)

@@ -13,13 +13,15 @@ def test_standard_cli_publishes_all_msas_and_log(
     result = main(
         [
             "standard",
+            "--input",
             str(input_path),
+            "--output-dir",
             str(output),
-            "--db",
+            "--db-path",
             str(fake_database),
             "--colabfold-search",
             str(fake_colabfold_search.executable),
-            "--work",
+            "--work-dir",
             str(tmp_path / "work"),
         ]
     )
@@ -28,6 +30,9 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert (output / "one.a3m").read_text(encoding="utf-8") == ">one\nACDE\n"
     assert (output / "two.a3m").read_text(encoding="utf-8") == ">two\nFGHI\n"
     assert "fake search complete" in (output / "run.log").read_text(encoding="utf-8")
+    assert (tmp_path / "work").is_dir()
+    assert not list((tmp_path / "work").iterdir())
+    assert len(fake_colabfold_search.invocations()) == 1
 
 
 def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
@@ -40,9 +45,9 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
 
     assert main(
         [
-            "standard", str(input_path), str(output), "--db", str(fake_database),
+            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
             "--colabfold-search", str(fake_colabfold_search.executable), "--gpus", "2,3",
-            "--af3-json", "--work", str(tmp_path / "work-1"),
+            "--af3-json", "--work-dir", str(tmp_path / "work-1"),
         ]
     ) == 0
     invocation = fake_colabfold_search.invocation()
@@ -53,14 +58,16 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
     cpu_output = tmp_path / "cpu-output"
     assert main(
         [
-            "standard", str(input_path), str(cpu_output), "--db", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--no-gpu",
-            "--work", str(tmp_path / "work-2"),
+            "standard", "--input", str(input_path), "--output-dir", str(cpu_output), "--db-path", str(fake_database),
+            "--colabfold-search", str(fake_colabfold_search.executable), "--no-gpu", "--gpus", "9",
+            "--work-dir", str(tmp_path / "work-2"),
         ]
     ) == 0
     cpu_invocation = fake_colabfold_search.invocation()
     assert cpu_invocation["cuda_visible_devices"] is None
     assert cpu_invocation["argv"][-2:] == ["--gpu", "0"]
+    assert len(fake_colabfold_search.invocations()) == 2
+    assert "ignored" in (cpu_output / "run.log").read_text(encoding="utf-8").lower()
 
 
 def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_output(
@@ -74,8 +81,8 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
 
     assert main(
         [
-            "standard", str(input_path), str(output), "--db", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--work", str(work),
+            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
+            "--colabfold-search", str(fake_colabfold_search.executable), "--work-dir", str(work),
         ]
     ) == 1
     assert not output.exists()
@@ -86,8 +93,8 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
     failure_output = tmp_path / "failure-output"
     assert main(
         [
-            "standard", str(input_path), str(failure_output), "--db", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--work",
+            "standard", "--input", str(input_path), "--output-dir", str(failure_output), "--db-path", str(fake_database),
+            "--colabfold-search", str(fake_colabfold_search.executable), "--work-dir",
             str(tmp_path / "failure-work"),
         ]
     ) == 1
@@ -106,7 +113,7 @@ def test_standard_cli_rejects_nonempty_output_before_external_compute(
 
     assert main(
         [
-            "standard", str(input_path), str(output), "--db", str(fake_database),
+            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
             "--colabfold-search", str(fake_colabfold_search.executable),
         ]
     ) == 1

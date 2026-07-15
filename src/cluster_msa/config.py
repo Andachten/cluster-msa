@@ -34,7 +34,7 @@ def resolve_executable(explicit: str | None, env_name: str, executable: str) -> 
 def resolve_database(explicit: Path | None, environ: Mapping[str, str]) -> Path:
     value = explicit or (Path(environ["CLUSTER_MSA_DB"]) if environ.get("CLUSTER_MSA_DB") else None)
     if value is None:
-        raise ConfigurationError("database is required: use --db or CLUSTER_MSA_DB")
+        raise ConfigurationError("database is required: use --db-path or CLUSTER_MSA_DB")
     path = Path(value).expanduser()
     validate_database(path)
     return path.resolve()
@@ -85,7 +85,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     input_path = _required_path(_arg(args, "input", "input_path"), "input")
     if not input_path.is_file():
         raise ConfigurationError(f"input is not a file: {input_path}")
-    output_dir = _required_path(_arg(args, "output", "output_dir"), "output")
+    output_dir = _required_path(_arg(args, "output_dir", "output"), "output")
     if output_dir.exists() and not output_dir.is_dir():
         raise ConfigurationError(f"output is not a directory: {output_dir}")
 
@@ -104,14 +104,14 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         mode=mode,
         input_path=input_path,
         output_dir=output_dir,
-        db_path=resolve_database(_arg(args, "db", "db_path"), environ),
+        db_path=resolve_database(_arg(args, "db_path", "db"), environ),
         toolchain=Toolchain(search, mmseqs),
         threads=threads,
         gpu=gpu,
         gpus=gpus,
         af3_json=bool(_arg(args, "af3_json", default=False)),
-        tmp_dir=Path(_arg(args, "tmp", "tmp_dir") or ".cluster-msa-tmp").expanduser(),
-        work_dir=Path(_arg(args, "work", "work_dir") or ".cluster-msa-work").expanduser(),
+        tmp_dir=Path(_arg(args, "tmp_dir", "tmp") or ".cluster-msa-tmp").expanduser(),
+        work_dir=Path(_arg(args, "work_dir", "work") or ".cluster-msa-work").expanduser(),
         keep_work=bool(_arg(args, "keep_work", default=False)),
         overwrite=bool(_arg(args, "overwrite", default=False)),
         verbose=bool(_arg(args, "verbose", default=False)),
