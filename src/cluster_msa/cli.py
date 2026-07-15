@@ -14,24 +14,27 @@ def build_parser() -> argparse.ArgumentParser:
         description="Standard and cluster-accelerated batch MSA generation",
     )
     subparsers = parser.add_subparsers(dest="mode", required=True)
-    for mode, help_text in (("standard", "Generate batch MSAs directly"), ("accelerated", "Generate batch MSAs with clustering")):
+    for mode, help_text in (
+        ("standard", "Generate batch MSAs directly"),
+        ("accelerated", "Generate batch MSAs with clustering"),
+    ):
         command = subparsers.add_parser(mode, help=help_text)
         command.add_argument("--input", required=True)
         command.add_argument("--output-dir", required=True)
         command.add_argument("--db-path")
         command.add_argument("--colabfold-search")
+        command.add_argument("--mmseqs")
         command.add_argument("--threads", type=int, default=1)
         command.add_argument("--gpu", action="store_true", default=None)
         command.add_argument("--no-gpu", action="store_true")
         command.add_argument("--gpus", default="")
         command.add_argument("--af3-json", action="store_true")
         command.add_argument("--tmp-dir")
-        command.add_argument("--work-dir")
         command.add_argument("--keep-work", action="store_true")
         command.add_argument("--overwrite", action="store_true")
         command.add_argument("--verbose", action="store_true")
         if mode == "accelerated":
-            command.add_argument("--mmseqs")
+            command.add_argument("--work-dir")
             command.add_argument("--cluster-identity", type=float, default=0.7)
             command.add_argument("--cluster-coverage", type=float, default=0.8)
             command.add_argument("--cluster-mode", type=int, default=0)

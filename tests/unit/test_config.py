@@ -124,7 +124,7 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
     assert config.gpu is True
     assert config.gpus == ""
     assert config.tmp_dir == Path(".cluster-msa-tmp")
-    assert config.work_dir == Path(".cluster-msa-work")
+    assert config.work_dir == tmp_path / ".cluster-msa-work"
 
 
 def test_build_run_config_requires_mmseqs_for_accelerated(tmp_path, monkeypatch):
@@ -238,7 +238,7 @@ def test_build_run_config_expands_all_user_paths(tmp_path, monkeypatch):
     assert config.db_path == home / "db"
     assert config.toolchain.colabfold_search == home / "search"
     assert config.tmp_dir == home / "tmp"
-    assert config.work_dir == home / "work"
+    assert config.work_dir == home / ".cluster-msa-work"
 
 
 def test_build_run_config_gpu_flag_and_environment_precedence(tmp_path, monkeypatch):

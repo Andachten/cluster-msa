@@ -100,6 +100,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     gpu_value = _arg(args, "gpu")
     gpu = False if _arg(args, "no_gpu", default=False) else gpu_value is not False
     gpus = _arg(args, "gpus") or ""
+    tmp_dir = Path(_arg(args, "tmp_dir", "tmp") or ".cluster-msa-tmp").expanduser()
     return RunConfig(
         mode=mode,
         input_path=input_path,
@@ -110,8 +111,8 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         gpu=gpu,
         gpus=gpus,
         af3_json=bool(_arg(args, "af3_json", default=False)),
-        tmp_dir=Path(_arg(args, "tmp_dir", "tmp") or ".cluster-msa-tmp").expanduser(),
-        work_dir=Path(_arg(args, "work_dir", "work") or ".cluster-msa-work").expanduser(),
+        tmp_dir=tmp_dir,
+        work_dir=_resolve_work_dir(args, mode, output_dir, tmp_dir),
         keep_work=bool(_arg(args, "keep_work", default=False)),
         overwrite=bool(_arg(args, "overwrite", default=False)),
         verbose=bool(_arg(args, "verbose", default=False)),
@@ -131,6 +132,13 @@ def _resolve_with_environment(explicit, environ, env_name, executable):
         found = shutil.which(executable)
         return _executable_path(found, executable) if found else None
     return None
+
+
+def _resolve_work_dir(args, mode: str, output_dir: Path, tmp_dir: Path) -> Path:
+    explicit = _arg(args, "work_dir", "work")
+    if mode == "standard":
+        return (output_dir.parent / ".cluster-msa-work").expanduser()
+    return Path(explicit or tmp_dir / "cluster-msa-work").expanduser()
 
 
 def _resolve_required_with_environment(explicit, environ, env_name, executable):

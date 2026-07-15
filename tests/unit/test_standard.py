@@ -67,8 +67,20 @@ def test_run_full_database_search_sets_child_cuda_policy(
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o755)
     config = RunConfig(
-        "standard", tmp_path / "in.csv", tmp_path / "out", tmp_path, Toolchain(executable, None),
-        1, gpu, gpus, False, tmp_path / "tmp", tmp_path / "work", False, False, False,
+        "standard",
+        tmp_path / "in.csv",
+        tmp_path / "out",
+        tmp_path,
+        Toolchain(executable, None),
+        1,
+        gpu,
+        gpus,
+        False,
+        tmp_path / "tmp",
+        tmp_path / "work",
+        False,
+        False,
+        False,
     )
     captured = {}
     monkeypatch.setattr(
@@ -77,7 +89,10 @@ def test_run_full_database_search_sets_child_cuda_policy(
     )
 
     run_full_database_search(
-        (SequenceRecord("one", "ACDE"),), config.input_path, config.output_dir, config,
+        (SequenceRecord("one", "ACDE"),),
+        config.input_path,
+        config.output_dir,
+        config,
         tmp_path / "run.log",
     )
 
@@ -89,8 +104,20 @@ def test_run_standard_preflights_before_work_or_external_tool(tmp_path, monkeypa
     output.mkdir()
     (output / "existing").write_text("old", encoding="utf-8")
     config = RunConfig(
-        "standard", tmp_path / "in.csv", output, tmp_path, Toolchain(tmp_path / "missing", None),
-        1, False, "", False, tmp_path / "tmp", tmp_path / "work", False, False, False,
+        "standard",
+        tmp_path / "in.csv",
+        output,
+        tmp_path,
+        Toolchain(tmp_path / "missing", None),
+        1,
+        False,
+        "",
+        False,
+        tmp_path / "tmp",
+        tmp_path / "work",
+        False,
+        False,
+        False,
     )
     monkeypatch.setattr("cluster_msa.standard.run_command", lambda *args, **kwargs: pytest.fail())
 
@@ -102,24 +129,52 @@ def test_run_standard_preflights_before_work_or_external_tool(tmp_path, monkeypa
 def test_run_standard_retains_failure_diagnostics_and_cleans_success(tmp_path, monkeypatch):
     records = (SequenceRecord("one", "ACDE"),)
     config = RunConfig(
-        "standard", tmp_path / "in.csv", tmp_path / "output", tmp_path, Toolchain(tmp_path / "search", None),
-        1, False, "", False, tmp_path / "tmp", tmp_path / "work", False, False, False,
+        "standard",
+        tmp_path / "in.csv",
+        tmp_path / "output",
+        tmp_path,
+        Toolchain(tmp_path / "search", None),
+        1,
+        False,
+        "",
+        False,
+        tmp_path / "tmp",
+        tmp_path / "work",
+        False,
+        False,
+        False,
     )
     monkeypatch.setattr(
         "cluster_msa.standard.run_full_database_search",
-        lambda records, input_csv, destination, config, log_path: log_path.write_text("failed", encoding="utf-8"),
+        lambda records, input_csv, destination, config, log_path: log_path.write_text(
+            "failed", encoding="utf-8"
+        ),
     )
     with pytest.raises(OutputValidationError):
         run_standard(config, records)
     assert list((tmp_path / "work").rglob("run.log"))
 
     config = RunConfig(
-        "standard", tmp_path / "in.csv", tmp_path / "success", tmp_path, Toolchain(tmp_path / "search", None),
-        1, False, "", False, tmp_path / "tmp", tmp_path / "success-work", False, False, False,
+        "standard",
+        tmp_path / "in.csv",
+        tmp_path / "success",
+        tmp_path,
+        Toolchain(tmp_path / "search", None),
+        1,
+        False,
+        "",
+        False,
+        tmp_path / "tmp",
+        tmp_path / "success-work",
+        False,
+        False,
+        False,
     )
+
     def successful(records, input_csv, destination, config, log_path):
         (destination / "one.a3m").write_text(">one\nACDE\n", encoding="utf-8")
         log_path.write_text("ok", encoding="utf-8")
+
     monkeypatch.setattr("cluster_msa.standard.run_full_database_search", successful)
     result = run_standard(config, records)
     assert (result.mode, result.expected_count, result.generated_count) == ("standard", 1, 1)
@@ -129,9 +184,20 @@ def test_run_standard_retains_failure_diagnostics_and_cleans_success(tmp_path, m
 def test_run_standard_keep_work_retains_successful_staging(tmp_path, monkeypatch):
     records = (SequenceRecord("one", "ACDE"),)
     config = RunConfig(
-        "standard", tmp_path / "in.csv", tmp_path / "output", tmp_path,
-        Toolchain(tmp_path / "search", None), 1, False, "", False, tmp_path / "tmp",
-        tmp_path / "work", True, False, False,
+        "standard",
+        tmp_path / "in.csv",
+        tmp_path / "output",
+        tmp_path,
+        Toolchain(tmp_path / "search", None),
+        1,
+        False,
+        "",
+        False,
+        tmp_path / "tmp",
+        tmp_path / "work",
+        True,
+        False,
+        False,
     )
 
     def successful(records, input_csv, destination, config, log_path):

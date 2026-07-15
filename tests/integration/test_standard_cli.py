@@ -9,6 +9,10 @@ def test_standard_cli_publishes_all_msas_and_log(
     input_path = tmp_path / "input.csv"
     input_path.write_text("id,sequence\none,acde\ntwo,FGHI\n", encoding="utf-8")
     output = tmp_path / "output"
+    mmseqs = tmp_path / "mmseqs"
+    mmseqs_marker = tmp_path / "mmseqs-invoked"
+    mmseqs.write_text(f"#!/bin/sh\ntouch {mmseqs_marker}\nexit 99\n", encoding="utf-8")
+    mmseqs.chmod(0o755)
 
     result = main(
         [
@@ -21,8 +25,8 @@ def test_standard_cli_publishes_all_msas_and_log(
             str(fake_database),
             "--colabfold-search",
             str(fake_colabfold_search.executable),
-            "--work-dir",
-            str(tmp_path / "work"),
+            "--mmseqs",
+            str(mmseqs),
         ]
     )
 
@@ -30,9 +34,11 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert (output / "one.a3m").read_text(encoding="utf-8") == ">one\nACDE\n"
     assert (output / "two.a3m").read_text(encoding="utf-8") == ">two\nFGHI\n"
     assert "fake search complete" in (output / "run.log").read_text(encoding="utf-8")
-    assert (tmp_path / "work").is_dir()
-    assert not list((tmp_path / "work").iterdir())
+    derived_work = output.parent / ".cluster-msa-work"
+    assert derived_work.is_dir()
+    assert not list(derived_work.iterdir())
     assert len(fake_colabfold_search.invocations()) == 1
+    assert not mmseqs_marker.exists()
 
 
 def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
@@ -43,26 +49,50 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
     output = tmp_path / "af3-output"
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "inherited")
 
-    assert main(
-        [
-            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--gpus", "2,3",
-            "--af3-json", "--work-dir", str(tmp_path / "work-1"),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "standard",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(output),
+                "--db-path",
+                str(fake_database),
+                "--colabfold-search",
+                str(fake_colabfold_search.executable),
+                "--gpus",
+                "2,3",
+                "--af3-json",
+            ]
+        )
+        == 0
+    )
     invocation = fake_colabfold_search.invocation()
     assert invocation["cuda_visible_devices"] == "2,3"
     assert "--af3-json" in invocation["argv"]
     assert (output / "one_data.json").exists()
 
     cpu_output = tmp_path / "cpu-output"
-    assert main(
-        [
-            "standard", "--input", str(input_path), "--output-dir", str(cpu_output), "--db-path", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--no-gpu", "--gpus", "9",
-            "--work-dir", str(tmp_path / "work-2"),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "standard",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(cpu_output),
+                "--db-path",
+                str(fake_database),
+                "--colabfold-search",
+                str(fake_colabfold_search.executable),
+                "--no-gpu",
+                "--gpus",
+                "9",
+            ]
+        )
+        == 0
+    )
     cpu_invocation = fake_colabfold_search.invocation()
     assert cpu_invocation["cuda_visible_devices"] is None
     assert cpu_invocation["argv"][-2:] == ["--gpu", "0"]
@@ -76,30 +106,49 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
     input_path = tmp_path / "input.csv"
     input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
     output = tmp_path / "output"
-    work = tmp_path / "work"
+    work = output.parent / ".cluster-msa-work"
     monkeypatch.setenv("FAKE_COLABFOLD_SKIP_ID", "two")
 
-    assert main(
-        [
-            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--work-dir", str(work),
-        ]
-    ) == 1
+    assert (
+        main(
+            [
+                "standard",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(output),
+                "--db-path",
+                str(fake_database),
+                "--colabfold-search",
+                str(fake_colabfold_search.executable),
+            ]
+        )
+        == 1
+    )
     assert not output.exists()
     assert list(work.rglob("one.a3m"))
     assert list(work.rglob("run.log"))
 
     monkeypatch.setenv("FAKE_COLABFOLD_FAIL", "1")
     failure_output = tmp_path / "failure-output"
-    assert main(
-        [
-            "standard", "--input", str(input_path), "--output-dir", str(failure_output), "--db-path", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable), "--work-dir",
-            str(tmp_path / "failure-work"),
-        ]
-    ) == 1
+    assert (
+        main(
+            [
+                "standard",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(failure_output),
+                "--db-path",
+                str(fake_database),
+                "--colabfold-search",
+                str(fake_colabfold_search.executable),
+            ]
+        )
+        == 1
+    )
     assert not failure_output.exists()
-    assert list((tmp_path / "failure-work").rglob("run.log"))
+    assert list((failure_output.parent / ".cluster-msa-work").rglob("run.log"))
 
 
 def test_standard_cli_rejects_nonempty_output_before_external_compute(
@@ -111,10 +160,20 @@ def test_standard_cli_rejects_nonempty_output_before_external_compute(
     output.mkdir()
     (output / "old").write_text("old", encoding="utf-8")
 
-    assert main(
-        [
-            "standard", "--input", str(input_path), "--output-dir", str(output), "--db-path", str(fake_database),
-            "--colabfold-search", str(fake_colabfold_search.executable),
-        ]
-    ) == 1
+    assert (
+        main(
+            [
+                "standard",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(output),
+                "--db-path",
+                str(fake_database),
+                "--colabfold-search",
+                str(fake_colabfold_search.executable),
+            ]
+        )
+        == 1
+    )
     assert fake_colabfold_search.invocation_path.exists() is False
