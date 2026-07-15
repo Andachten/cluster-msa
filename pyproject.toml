@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cluster-msa"
+version = "0.1.0"
+description = "Standard and cluster-accelerated batch MSA generation"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Bin Zheng", email = "1311343971@qq.com"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["build", "pytest", "ruff"]
+
+[project.scripts]
+cluster-msa = "cluster_msa.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["smoke: marks command-line smoke tests"]
+
+[tool.ruff]
+line-length = 100
