@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import threading
+import warnings
 from pathlib import Path
 
 import pytest
@@ -380,8 +381,9 @@ def test_publish_lock_failure_is_typed_and_leaves_output_untouched(
     assert not (output / "second.a3m").exists()
 
 
-def test_publish_unlock_failure_does_not_mask_body_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("teardown_failure", ["unlock", "close"])
+def test_publish_lock_teardown_failure_does_not_mask_body_error_with_warnings_as_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, teardown_failure: str
 ) -> None:
     staging = tmp_path / "staging"
     output = tmp_path / "output"
@@ -393,10 +395,29 @@ def test_publish_unlock_failure_does_not_mask_body_error(
     real_flock = __import__("fcntl").flock
     real_replace = os.replace
 
-    def fail_unlock(file_descriptor: int, operation: int) -> None:
-        if operation == __import__("fcntl").LOCK_UN:
+    def maybe_fail_unlock(file_descriptor: int, operation: int) -> None:
+        if teardown_failure == "unlock" and operation == __import__("fcntl").LOCK_UN:
             raise OSError("unlock denied")
         real_flock(file_descriptor, operation)
+
+    real_path_open = Path.open
+
+    class CloseFailure:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def close(self):
+            self.handle.close()
+            raise OSError("close denied")
+
+    def maybe_fail_close(path: Path, *args, **kwargs):
+        handle = real_path_open(path, *args, **kwargs)
+        if teardown_failure == "close" and path.name.endswith(".lock"):
+            return CloseFailure(handle)
+        return handle
 
     def fail_second_publication(source: Path, destination: Path) -> None:
         if source.name == "second.a3m" and source.parent.name.startswith(
@@ -405,20 +426,23 @@ def test_publish_unlock_failure_does_not_mask_body_error(
             raise OSError("publication body failed")
         real_replace(source, destination)
 
-    monkeypatch.setattr("cluster_msa.output.fcntl.flock", fail_unlock)
+    monkeypatch.setattr("cluster_msa.output.fcntl.flock", maybe_fail_unlock)
+    monkeypatch.setattr(Path, "open", maybe_fail_close)
     monkeypatch.setattr(os, "replace", fail_second_publication)
 
-    with pytest.warns(RuntimeWarning, match="unlock denied"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         with pytest.raises(OutputValidationError) as captured:
             publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
 
     assert "publication body failed" in str(captured.value)
     assert "cannot release publication lock" not in str(captured.value)
-    assert any("unlock denied" in note for note in captured.value.__notes__)
+    assert any(f"{teardown_failure} denied" in note for note in captured.value.__notes__)
 
 
-def test_publish_unlock_failure_is_nonfatal_and_releases_thread_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("teardown_failure", ["unlock", "close"])
+def test_publish_lock_teardown_failure_is_nonfatal_and_releases_thread_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, teardown_failure: str
 ) -> None:
     output = tmp_path / "output"
     first_staging = tmp_path / "staging-first"
@@ -429,18 +453,46 @@ def test_publish_unlock_failure_is_nonfatal_and_releases_thread_lock(
     write_valid_outputs(second_staging)
     (second_staging / "first.a3m").write_text(">query\nSECOND\n", encoding="utf-8")
     real_flock = __import__("fcntl").flock
-    unlock_failures = 0
+    teardown_failures = 0
 
     def fail_first_unlock(file_descriptor: int, operation: int) -> None:
-        nonlocal unlock_failures
-        if operation == __import__("fcntl").LOCK_UN and unlock_failures == 0:
-            unlock_failures += 1
+        nonlocal teardown_failures
+        if (
+            teardown_failure == "unlock"
+            and operation == __import__("fcntl").LOCK_UN
+            and teardown_failures == 0
+        ):
+            teardown_failures += 1
             raise OSError("unlock denied")
         real_flock(file_descriptor, operation)
 
-    monkeypatch.setattr("cluster_msa.output.fcntl.flock", fail_first_unlock)
+    real_path_open = Path.open
 
-    with pytest.warns(RuntimeWarning, match="unlock denied"):
+    class FirstCloseFailure:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def close(self):
+            nonlocal teardown_failures
+            self.handle.close()
+            if teardown_failures == 0:
+                teardown_failures += 1
+                raise OSError("close denied")
+
+    def fail_first_close(path: Path, *args, **kwargs):
+        handle = real_path_open(path, *args, **kwargs)
+        if teardown_failure == "close" and path.name.endswith(".lock"):
+            return FirstCloseFailure(handle)
+        return handle
+
+    monkeypatch.setattr("cluster_msa.output.fcntl.flock", fail_first_unlock)
+    monkeypatch.setattr(Path, "open", fail_first_close)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         publish_outputs(first_staging, output, RECORDS, af3_json=False, overwrite=False)
 
     completed = threading.Event()
