@@ -10,6 +10,7 @@ def test_standard_cli_publishes_all_msas_and_log(
     input_path.write_text("id,sequence\none,acde\ntwo,FGHI\n", encoding="utf-8")
     output = tmp_path / "output"
     mmseqs = tmp_path / "mmseqs"
+    tmp_dir = tmp_path / "tmp"
     mmseqs_marker = tmp_path / "mmseqs-invoked"
     mmseqs.write_text(f"#!/bin/sh\ntouch {mmseqs_marker}\nexit 99\n", encoding="utf-8")
     mmseqs.chmod(0o755)
@@ -27,6 +28,8 @@ def test_standard_cli_publishes_all_msas_and_log(
             str(fake_colabfold_search.executable),
             "--mmseqs",
             str(mmseqs),
+            "--tmp-dir",
+            str(tmp_dir),
         ]
     )
 
@@ -34,11 +37,13 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert (output / "one.a3m").read_text(encoding="utf-8") == ">one\nACDE\n"
     assert (output / "two.a3m").read_text(encoding="utf-8") == ">two\nFGHI\n"
     assert "fake search complete" in (output / "run.log").read_text(encoding="utf-8")
-    derived_work = output.parent / ".cluster-msa-work"
+    derived_work = tmp_dir / "cluster-msa-work"
     assert derived_work.is_dir()
     assert not list(derived_work.iterdir())
     assert len(fake_colabfold_search.invocations()) == 1
     assert not mmseqs_marker.exists()
+    staging = Path(fake_colabfold_search.invocation()["argv"][2]).resolve()
+    assert not staging.is_relative_to(output.resolve())
 
 
 def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
@@ -47,6 +52,7 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
     input_path = tmp_path / "input.csv"
     input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
     output = tmp_path / "af3-output"
+    tmp_dir = tmp_path / "tmp"
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "inherited")
 
     assert (
@@ -64,6 +70,8 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
                 "--gpus",
                 "2,3",
                 "--af3-json",
+                "--tmp-dir",
+                str(tmp_dir),
             ]
         )
         == 0
@@ -89,6 +97,8 @@ def test_standard_cli_supports_af3_json_gpu_and_cpu_environment(
                 "--no-gpu",
                 "--gpus",
                 "9",
+                "--tmp-dir",
+                str(tmp_dir),
             ]
         )
         == 0
@@ -106,7 +116,8 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
     input_path = tmp_path / "input.csv"
     input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
     output = tmp_path / "output"
-    work = output.parent / ".cluster-msa-work"
+    tmp_dir = tmp_path / "tmp"
+    work = tmp_dir / "cluster-msa-work"
     monkeypatch.setenv("FAKE_COLABFOLD_SKIP_ID", "two")
 
     assert (
@@ -121,6 +132,8 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
                 str(fake_database),
                 "--colabfold-search",
                 str(fake_colabfold_search.executable),
+                "--tmp-dir",
+                str(tmp_dir),
             ]
         )
         == 1
@@ -143,12 +156,14 @@ def test_standard_cli_retains_work_on_tool_failure_and_never_publishes_partial_o
                 str(fake_database),
                 "--colabfold-search",
                 str(fake_colabfold_search.executable),
+                "--tmp-dir",
+                str(tmp_dir),
             ]
         )
         == 1
     )
     assert not failure_output.exists()
-    assert list((failure_output.parent / ".cluster-msa-work").rglob("run.log"))
+    assert len(list(work.rglob("run.log"))) == 2
 
 
 def test_standard_cli_rejects_nonempty_output_before_external_compute(

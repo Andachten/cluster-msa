@@ -1,4 +1,5 @@
 import argparse
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -124,7 +125,75 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
     assert config.gpu is True
     assert config.gpus == ""
     assert config.tmp_dir == Path(".cluster-msa-tmp")
-    assert config.work_dir == tmp_path / ".cluster-msa-work"
+    assert config.work_dir == Path(".cluster-msa-tmp") / "cluster-msa-work"
+
+
+@pytest.mark.parametrize(
+    ("output", "tmp"),
+    [(Path("."), Path(".cluster-msa-tmp")), (Path(".cluster-msa-work"), Path("tmp"))],
+)
+def test_standard_work_root_is_resolved_outside_output(tmp_path, monkeypatch, output, tmp):
+    search = executable(tmp_path / "search")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    config = build_run_config(
+        args_for(tmp_path, output=output, tmp=tmp, colabfold_search=str(search), db=db), {}
+    )
+
+    assert config.work_dir.resolve() != config.output_dir.resolve()
+    assert not config.work_dir.resolve().is_relative_to(config.output_dir.resolve())
+
+
+def test_standard_work_root_falls_back_when_explicit_tmp_is_inside_output(tmp_path):
+    search = executable(tmp_path / "search")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    output = tmp_path / "output"
+
+    config = build_run_config(
+        args_for(
+            tmp_path,
+            output=output,
+            tmp=output / "tmp",
+            colabfold_search=str(search),
+            db=db,
+        ),
+        {},
+    )
+
+    assert config.work_dir == Path(tempfile.gettempdir()) / "cluster-msa-work"
+    assert not config.work_dir.resolve().is_relative_to(output.resolve())
+
+
+@pytest.mark.parametrize("work_suffix", [Path("."), Path("work")])
+def test_accelerated_rejects_work_root_inside_output(tmp_path, work_suffix):
+    search = executable(tmp_path / "search")
+    mmseqs = executable(tmp_path / "mmseqs")
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "uniref30_component").write_text("", encoding="utf-8")
+    (db / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    output = tmp_path / "output"
+
+    with pytest.raises(ConfigurationError, match="work.*output"):
+        build_run_config(
+            args_for(
+                tmp_path,
+                mode="accelerated",
+                output=output,
+                work=output / work_suffix,
+                colabfold_search=str(search),
+                mmseqs=str(mmseqs),
+                db=db,
+            ),
+            {},
+        )
 
 
 def test_build_run_config_requires_mmseqs_for_accelerated(tmp_path, monkeypatch):
@@ -238,7 +307,7 @@ def test_build_run_config_expands_all_user_paths(tmp_path, monkeypatch):
     assert config.db_path == home / "db"
     assert config.toolchain.colabfold_search == home / "search"
     assert config.tmp_dir == home / "tmp"
-    assert config.work_dir == home / ".cluster-msa-work"
+    assert config.work_dir == home / "tmp" / "cluster-msa-work"
 
 
 def test_build_run_config_gpu_flag_and_environment_precedence(tmp_path, monkeypatch):

@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Mapping
 
@@ -137,8 +138,23 @@ def _resolve_with_environment(explicit, environ, env_name, executable):
 def _resolve_work_dir(args, mode: str, output_dir: Path, tmp_dir: Path) -> Path:
     explicit = _arg(args, "work_dir", "work")
     if mode == "standard":
-        return (output_dir.parent / ".cluster-msa-work").expanduser()
-    return Path(explicit or tmp_dir / "cluster-msa-work").expanduser()
+        candidate = (tmp_dir / "cluster-msa-work").expanduser()
+        if _inside(candidate, output_dir):
+            candidate = Path(tempfile.gettempdir()) / "cluster-msa-work"
+        if _inside(candidate, output_dir):
+            raise ConfigurationError(
+                "cannot place standard work directory outside output directory"
+            )
+        return candidate
+
+    candidate = Path(explicit or tmp_dir / "cluster-msa-work").expanduser()
+    if _inside(candidate, output_dir):
+        raise ConfigurationError("work directory must be outside output directory")
+    return candidate
+
+
+def _inside(path: Path, directory: Path) -> bool:
+    return path.resolve().is_relative_to(directory.resolve())
 
 
 def _resolve_required_with_environment(explicit, environ, env_name, executable):
