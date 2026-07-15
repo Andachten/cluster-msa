@@ -123,6 +123,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                         ) from error
             _merge_expected(rep_dir, representatives, staging, config.af3_json, log_path)
             _merge_expected(nonrep_dir, nonrepresentatives, staging, config.af3_json, log_path)
+            stage_durations["merge_and_staging"] = time.monotonic() - stage_started
 
         validation_started = time.monotonic()
         validate_outputs(staging, records, config.af3_json)
@@ -135,8 +136,6 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             nonrepresentative_count=len(nonrepresentatives),
             fallback_reason=fallback_reason,
         )
-        if not fallback_reason:
-            stage_durations["merge_and_staging"] = time.monotonic() - stage_started
         finished_at = datetime.now(timezone.utc)
         stage_durations["total"] = time.monotonic() - total_started
         write_manifest(

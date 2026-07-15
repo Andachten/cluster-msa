@@ -224,6 +224,88 @@ def test_run_accelerated_falls_back_with_original_records_and_no_compact_command
     assert "standard fallback" in log
 
 
+def test_run_accelerated_stage_timings_have_exact_nonoverlapping_boundaries(
+    tmp_path, monkeypatch
+):
+    from cluster_msa.accelerated import run_accelerated
+
+    times = iter((0, 10, 11, 20, 22, 30, 33, 40, 44, 50, 55, 60, 66, 100))
+    captured = {}
+    monkeypatch.setattr("cluster_msa.accelerated.time.monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.cluster_sequences",
+        lambda records, **kwargs: ClusterResult((records[0],), ((records[1], "one"),)),
+    )
+
+    def full(records, input_csv, destination, config, log_path):
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "one.a3m").write_text(">one\nACDE\n", encoding="utf-8")
+
+    def search(records, compact_db, output_dir, config, log_path):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "two.a3m").write_text(">two\nFGHI\n", encoding="utf-8")
+
+    monkeypatch.setattr("cluster_msa.accelerated.run_full_database_search", full)
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.build_compact_database", lambda *args: tmp_path / "db"
+    )
+    monkeypatch.setattr("cluster_msa.accelerated.search_compact_database", search)
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.write_manifest",
+        lambda path, **kwargs: captured.update(kwargs),
+    )
+
+    run_accelerated(make_config(tmp_path), RECORDS[:2])
+
+    durations = captured["stage_durations"]
+    assert durations == {
+        "clustering": 1,
+        "representative_search": 2,
+        "compact_database": 3,
+        "nonrepresentative_search": 4,
+        "merge_and_staging": 5,
+        "output_validation": 6,
+        "total": 100,
+    }
+    assert sum(value for name, value in durations.items() if name != "total") <= durations["total"]
+
+
+def test_run_accelerated_fallback_stage_timings_do_not_overlap(tmp_path, monkeypatch):
+    from cluster_msa.accelerated import run_accelerated
+
+    times = iter((0, 10, 11, 20, 22, 30, 33, 100))
+    captured = {}
+    monkeypatch.setattr("cluster_msa.accelerated.time.monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.cluster_sequences",
+        lambda records, **kwargs: ClusterResult(tuple(records), ()),
+    )
+
+    def full(records, input_csv, destination, config, log_path):
+        destination.mkdir(parents=True, exist_ok=True)
+        for record in records:
+            (destination / f"{record.id}.a3m").write_text(
+                f">{record.id}\n{record.sequence}\n", encoding="utf-8"
+            )
+
+    monkeypatch.setattr("cluster_msa.accelerated.run_full_database_search", full)
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.write_manifest",
+        lambda path, **kwargs: captured.update(kwargs),
+    )
+
+    run_accelerated(make_config(tmp_path), RECORDS[:2])
+
+    durations = captured["stage_durations"]
+    assert durations == {
+        "clustering": 1,
+        "standard_search": 2,
+        "output_validation": 3,
+        "total": 100,
+    }
+    assert sum(value for name, value in durations.items() if name != "total") <= durations["total"]
+
+
 def test_run_accelerated_preflights_before_clustering(tmp_path, monkeypatch):
     from cluster_msa.accelerated import run_accelerated
 
