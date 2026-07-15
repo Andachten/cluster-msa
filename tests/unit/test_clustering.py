@@ -40,6 +40,32 @@ def test_write_fasta_rejects_empty_records(tmp_path: Path) -> None:
         write_fasta((), tmp_path / "inputs.fasta")
 
 
+@pytest.mark.parametrize(
+    ("records", "message"),
+    [
+        ((SequenceRecord("bad", ""),), "empty"),
+        ((SequenceRecord("bad", "AC1E"),), "residue"),
+        ((SequenceRecord("bad", "AC\n>injected\nAAAA"),), "whitespace"),
+        ((SequenceRecord("bad", "AC DE"),), "whitespace"),
+        ((SequenceRecord("bad", "AC:DE"),), "colon"),
+        ((SequenceRecord("bad", "ACÉE"),), "residue"),
+        (
+            (SequenceRecord("duplicate", "ACDE"), SequenceRecord("duplicate", "FGHI")),
+            "duplicate.*ID",
+        ),
+    ],
+)
+def test_write_fasta_validates_all_records_before_writing(
+    tmp_path: Path, records: tuple[SequenceRecord, ...], message: str
+) -> None:
+    path = tmp_path / "inputs.fasta"
+
+    with pytest.raises(InputValidationError, match=message):
+        write_fasta((SequenceRecord("valid", "ACDE"), *records), path)
+
+    assert not path.exists()
+
+
 def test_write_fasta_wraps_filesystem_errors(tmp_path: Path) -> None:
     parent = tmp_path / "not-a-directory"
     parent.write_text("occupied", encoding="utf-8")
@@ -182,3 +208,46 @@ def test_cluster_sequences_rejects_empty_records_before_running(tmp_path: Path, 
             threads=1,
             log_path=tmp_path / "run.log",
         )
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        (SequenceRecord("bad", ""),),
+        (SequenceRecord("bad", "AC1E"),),
+        (SequenceRecord("bad", "AC\n>injected\nAAAA"),),
+        (SequenceRecord("bad", "AC DE"),),
+        (SequenceRecord("bad", "AC:DE"),),
+        (SequenceRecord("bad", "ACÉE"),),
+        (SequenceRecord("duplicate", "ACDE"), SequenceRecord("duplicate", "FGHI")),
+    ],
+)
+def test_cluster_sequences_rejects_invalid_records_before_writing_or_running(
+    tmp_path: Path,
+    monkeypatch,
+    records: tuple[SequenceRecord, ...],
+) -> None:
+    invoked = False
+
+    def fake_run_command(*args, **kwargs):
+        nonlocal invoked
+        invoked = True
+
+    monkeypatch.setattr("cluster_msa.clustering.run_command", fake_run_command)
+    work_dir = tmp_path / "work"
+
+    with pytest.raises(InputValidationError):
+        cluster_sequences(
+            (SequenceRecord("valid", "ACDE"), *records),
+            mmseqs=tmp_path / "mmseqs",
+            work_dir=work_dir,
+            tmp_dir=tmp_path / "tmp",
+            min_seq_id=0.7,
+            coverage=0.8,
+            cluster_mode=0,
+            threads=1,
+            log_path=tmp_path / "run.log",
+        )
+
+    assert not invoked
+    assert not (work_dir / "cluster-input.fasta").exists()

@@ -1,22 +1,19 @@
-import re
 from pathlib import Path
 from typing import Sequence
 
 from cluster_msa.errors import InputValidationError, OutputValidationError
+from cluster_msa.input import normalize_sequence_record
 from cluster_msa.models import ClusterResult, SequenceRecord
 from cluster_msa.tools import run_command
 
 
-_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
 def write_fasta(records: Sequence[SequenceRecord], path: Path) -> None:
     """Write validated records as an ordered, unwrapped FASTA file."""
-    _validate_records(records)
+    normalized_records = _normalize_records(records)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="\n") as output:
-            for record in records:
+            for record in normalized_records:
                 output.write(f">{record.id}\n{record.sequence}\n")
     except OSError as error:
         raise OutputValidationError(f"cannot write FASTA file: {path}: {error}") from error
@@ -26,7 +23,7 @@ def parse_clusters(
     cluster_tsv: Path, records: Sequence[SequenceRecord]
 ) -> ClusterResult:
     """Validate mmseqs cluster membership and restore original input order."""
-    records_by_id = _validate_records(records)
+    records_by_id = {record.id: record for record in _normalize_records(records)}
     if cluster_tsv.is_symlink():
         raise OutputValidationError(f"cluster TSV is not a regular file: {cluster_tsv}")
     try:
@@ -130,14 +127,15 @@ def cluster_sequences(
     return parse_clusters(prefix.with_name(f"{prefix.name}_cluster.tsv"), records)
 
 
-def _validate_records(records: Sequence[SequenceRecord]) -> dict[str, SequenceRecord]:
+def _normalize_records(records: Sequence[SequenceRecord]) -> tuple[SequenceRecord, ...]:
     if not records:
         raise InputValidationError("cannot cluster an empty sequence collection")
-    records_by_id: dict[str, SequenceRecord] = {}
+    normalized_records: list[SequenceRecord] = []
+    seen_ids: set[str] = set()
     for record in records:
-        if not _ID_PATTERN.fullmatch(record.id):
-            raise InputValidationError(f"invalid sequence record ID: {record.id!r}")
-        if record.id in records_by_id:
+        normalized = normalize_sequence_record(record, error_prefix="invalid sequence record: ")
+        if normalized.id in seen_ids:
             raise InputValidationError(f"duplicate sequence record ID: {record.id!r}")
-        records_by_id[record.id] = record
-    return records_by_id
+        normalized_records.append(normalized)
+        seen_ids.add(normalized.id)
+    return tuple(normalized_records)
