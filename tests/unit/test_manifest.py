@@ -10,6 +10,28 @@ from cluster_msa.manifest import mark_manifest_failed, write_manifest
 from cluster_msa.models import RunConfig, RunResult, Toolchain
 
 
+STANDARD_TIMING = {
+    "full_database_search": 1.0,
+    "output_validation": 0.5,
+    "total": 2.0,
+}
+ACCELERATED_TIMING = {
+    "clustering": 1.0,
+    "representative_search": 1.0,
+    "compact_database": 1.0,
+    "nonrepresentative_search": 1.0,
+    "merge_and_staging": 1.0,
+    "output_validation": 1.0,
+    "total": 7.0,
+}
+FALLBACK_TIMING = {
+    "clustering": 1.0,
+    "standard_search": 1.0,
+    "output_validation": 1.0,
+    "total": 4.0,
+}
+
+
 def make_config(tmp_path: Path, *, mode: str = "standard") -> RunConfig:
     return RunConfig(
         mode=mode,
@@ -51,7 +73,7 @@ def test_write_manifest_has_stable_v1_schema_and_no_sensitive_content(tmp_path, 
         tool_versions={"colabfold_search": "colabfold 1.5", "mmseqs": "MMseqs2 15"},
         started_at=started,
         finished_at=finished,
-        stage_durations={"clustering": 1.25, "total": 12.0},
+        stage_durations={**ACCELERATED_TIMING, "total": 12.0},
     )
 
     document = json.loads(path.read_text(encoding="utf-8"))
@@ -90,7 +112,7 @@ def test_write_manifest_has_stable_v1_schema_and_no_sensitive_content(tmp_path, 
             "timing_scope": "through_pre_manifest_finalization",
             "started_at": "2026-07-15T09:30:00Z",
             "finished_at": "2026-07-15T09:30:12Z",
-            "stage_durations_seconds": {"clustering": 1.25, "total": 12.0},
+            "stage_durations_seconds": {**ACCELERATED_TIMING, "total": 12.0},
         },
         "result": {
             "expected_count": 3,
@@ -126,7 +148,7 @@ def test_standard_manifest_omits_accelerated_only_fields_and_mmseqs(tmp_path):
         tool_versions={"colabfold_search": "version"},
         started_at=now,
         finished_at=now,
-        stage_durations={"total": 0.0},
+        stage_durations=STANDARD_TIMING,
     )
 
     document = json.loads(path.read_text(encoding="utf-8"))
@@ -147,7 +169,7 @@ def test_manifest_prefers_exact_supplied_database_spelling(tmp_path):
         tool_versions={"colabfold_search": "version"},
         started_at=now,
         finished_at=now,
-        stage_durations={"total": 0.0},
+        stage_durations=STANDARD_TIMING,
     )
 
     assert json.loads(path.read_text(encoding="utf-8"))["database"] == {
@@ -159,24 +181,24 @@ def test_manifest_prefers_exact_supplied_database_spelling(tmp_path):
 @pytest.mark.parametrize(
     ("started", "finished", "durations", "message"),
     [
-        (datetime(2026, 1, 1), datetime.now(timezone.utc), {"total": 1.0}, "timezone-aware"),
-        (datetime.now(timezone.utc), datetime(2026, 1, 1), {"total": 1.0}, "timezone-aware"),
+        (datetime(2026, 1, 1), datetime.now(timezone.utc), STANDARD_TIMING, "timezone-aware"),
+        (datetime.now(timezone.utc), datetime(2026, 1, 1), STANDARD_TIMING, "timezone-aware"),
         (
             datetime(2026, 1, 2, tzinfo=timezone.utc),
             datetime(2026, 1, 1, tzinfo=timezone.utc),
-            {"total": 1.0},
+            STANDARD_TIMING,
             "before",
         ),
         (
             datetime(2026, 1, 1, tzinfo=timezone.utc),
             datetime(2026, 1, 2, tzinfo=timezone.utc),
-            {"total": -0.1},
+            {**STANDARD_TIMING, "total": -0.1},
             "nonnegative",
         ),
         (
             datetime(2026, 1, 1, tzinfo=timezone.utc),
             datetime(2026, 1, 2, tzinfo=timezone.utc),
-            {"total": float("nan")},
+            {**STANDARD_TIMING, "total": float("nan")},
             "finite",
         ),
     ],
@@ -215,7 +237,7 @@ def test_write_manifest_is_atomic_and_preserves_destination_on_replace_failure(
             tool_versions={"colabfold_search": "version"},
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=STANDARD_TIMING,
         )
 
     assert path.read_text(encoding="utf-8") == "old\n"
@@ -234,8 +256,12 @@ def test_write_manifest_is_stable_across_mapping_order(tmp_path):
 
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
-    write_manifest(first, **arguments, stage_durations={"search": 1.0, "total": 2.0})
-    write_manifest(second, **arguments, stage_durations={"total": 2.0, "search": 1.0})
+    write_manifest(first, **arguments, stage_durations=STANDARD_TIMING)
+    write_manifest(
+        second,
+        **arguments,
+        stage_durations={"total": 2.0, "output_validation": 0.5, "full_database_search": 1.0},
+    )
 
     assert first.read_bytes() == second.read_bytes()
 
@@ -250,7 +276,7 @@ def test_mark_manifest_failed_atomically_updates_only_diagnostic_status(tmp_path
         tool_versions={"colabfold_search": "version"},
         started_at=now,
         finished_at=now,
-        stage_durations={"total": 0.0},
+        stage_durations=STANDARD_TIMING,
     )
     original = json.loads(path.read_text(encoding="utf-8"))
 
@@ -332,7 +358,7 @@ def test_write_manifest_rejects_malformed_accelerated_inputs(
             tool_versions=versions,
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=ACCELERATED_TIMING,
         )
 
 
@@ -349,7 +375,7 @@ def test_write_manifest_rejects_empty_executable_name(tmp_path):
             tool_versions={"colabfold_search": "version"},
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=STANDARD_TIMING,
         )
 
 
@@ -382,7 +408,7 @@ def test_write_manifest_rejects_invalid_emitted_standard_config(tmp_path, change
             tool_versions={"colabfold_search": "version"},
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=STANDARD_TIMING,
         )
 
 
@@ -412,7 +438,7 @@ def test_write_manifest_rejects_invalid_emitted_accelerated_config(tmp_path, cha
             tool_versions={"colabfold_search": "version", "mmseqs": "version"},
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=ACCELERATED_TIMING,
         )
 
 
@@ -444,7 +470,7 @@ def test_write_manifest_rejects_inconsistent_success_counts(tmp_path, result):
             tool_versions=versions,
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=(ACCELERATED_TIMING if result.mode == "accelerated" else STANDARD_TIMING),
         )
 
 
@@ -457,7 +483,7 @@ def test_write_manifest_accepts_consistent_accelerated_fallback(tmp_path):
         tool_versions={"colabfold_search": "version", "mmseqs": "version"},
         started_at=now,
         finished_at=now,
-        stage_durations={"total": 0.0},
+        stage_durations=FALLBACK_TIMING,
     )
 
 
@@ -473,5 +499,60 @@ def test_write_manifest_wraps_nonfinite_json_serialization(tmp_path, monkeypatch
             tool_versions={"colabfold_search": "version"},
             started_at=now,
             finished_at=now,
-            stage_durations={"total": 0.0},
+            stage_durations=STANDARD_TIMING,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mode", "result", "durations"),
+    [
+        ("standard", RunResult("standard", 1, 1), {}),
+        ("standard", RunResult("standard", 1, 1), {"total": 1.0}),
+        (
+            "standard",
+            RunResult("standard", 1, 1),
+            {**STANDARD_TIMING, "unexpected": 0.0},
+        ),
+        (
+            "standard",
+            RunResult("standard", 1, 1),
+            {**STANDARD_TIMING, "full_database_search": 3.0},
+        ),
+        (
+            "standard",
+            RunResult("standard", 1, 1),
+            {"full_database_search": 1.1, "output_validation": 1.0, "total": 2.0},
+        ),
+        (
+            "accelerated",
+            RunResult("accelerated", 2, 2, 1, 1),
+            {**ACCELERATED_TIMING, "merge_and_staging": 3.0, "total": 7.0},
+        ),
+        (
+            "accelerated",
+            RunResult("accelerated", 2, 2, 2, 0, "no_non_representatives"),
+            ACCELERATED_TIMING,
+        ),
+        (
+            "accelerated",
+            RunResult("accelerated", 2, 2, 2, 0, "no_non_representatives"),
+            {"clustering": 2.0, "standard_search": 2.0, "output_validation": 2.0, "total": 5.9},
+        ),
+    ],
+)
+def test_write_manifest_rejects_invalid_stage_schema(tmp_path, mode, result, durations):
+    now = datetime.now(timezone.utc)
+    versions = {"colabfold_search": "version"}
+    if mode == "accelerated":
+        versions["mmseqs"] = "version"
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=make_config(tmp_path, mode=mode),
+            result=result,
+            tool_versions=versions,
+            started_at=now,
+            finished_at=now,
+            stage_durations=durations,
         )

@@ -109,12 +109,18 @@ def _write_success_manifest(
 
 def mark_manifest_failed(path: Path, stage: str, error: Exception) -> None:
     del error
+    messages = {
+        "publication": "output publication failed",
+        "work_retention": "work retention failed",
+    }
+    if stage not in messages:
+        raise OutputValidationError("cannot mark run manifest failed: invalid failure stage")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         document.update(
             status="failed",
             failure_stage=stage,
-            error="output publication failed",
+            error=messages[stage],
         )
         _write_atomic(
             path,
@@ -234,6 +240,7 @@ def _validate_inputs(
     if not isinstance(stage_durations, Mapping):
         raise OutputValidationError("manifest stage durations must be a mapping")
     _validate_timing(started_at, finished_at, stage_durations)
+    _validate_stage_schema(config.mode, result.fallback_reason, stage_durations)
 
 
 def _validate_config(config: RunConfig) -> None:
@@ -272,6 +279,34 @@ def _validate_config(config: RunConfig) -> None:
 def _validate_count(name: str, value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise OutputValidationError(f"manifest {name} count must be a nonnegative integer")
+
+
+def _validate_stage_schema(
+    mode: str, fallback_reason: str | None, stage_durations: Mapping[str, float]
+) -> None:
+    if mode == "standard":
+        expected = {"full_database_search", "output_validation", "total"}
+    elif fallback_reason == "no_non_representatives":
+        expected = {"clustering", "standard_search", "output_validation", "total"}
+    else:
+        expected = {
+            "clustering",
+            "representative_search",
+            "compact_database",
+            "nonrepresentative_search",
+            "merge_and_staging",
+            "output_validation",
+            "total",
+        }
+    if set(stage_durations) != expected:
+        raise OutputValidationError("manifest stage durations do not match the workflow")
+    total = stage_durations["total"]
+    tolerance = max(1.0, total) * 1e-9
+    non_total = [duration for name, duration in stage_durations.items() if name != "total"]
+    if any(duration > total + tolerance for duration in non_total):
+        raise OutputValidationError("manifest stage duration exceeds total")
+    if sum(non_total) > total + tolerance:
+        raise OutputValidationError("manifest stage durations overlap or exceed total")
 
 
 def _utc_iso(value: datetime) -> str:

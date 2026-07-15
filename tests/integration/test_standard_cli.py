@@ -337,3 +337,32 @@ def test_standard_cli_manifest_preserves_relative_database_spelling(
         if invocation["argv"] != ["--version"]
     ][0]
     assert search["argv"][1] == str(fake_database.resolve())
+
+
+def test_standard_keep_work_failure_marks_staging_manifest_failed(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, monkeypatch
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    output = tmp_path / "output"
+    tmp_dir = tmp_path / "tmp"
+
+    monkeypatch.setattr(
+        "cluster_msa.standard.shutil.copytree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("retention denied")),
+    )
+    result = main(
+        [
+            "standard", "--input", str(input_path), "--output-dir", str(output),
+            "--db-path", str(fake_database), "--colabfold-search",
+            str(fake_colabfold_search.executable), "--tmp-dir", str(tmp_dir), "--keep-work",
+        ]
+    )
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list((tmp_dir / "cluster-msa-work").rglob("run_manifest.json"))
+    assert len(manifests) == 1
+    document = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert (document["status"], document["failure_stage"]) == ("failed", "work_retention")
+    assert document["error"] == "work retention failed"

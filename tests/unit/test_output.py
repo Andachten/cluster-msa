@@ -9,7 +9,7 @@ import pytest
 
 from cluster_msa.errors import OutputValidationError
 from cluster_msa.models import SequenceRecord
-from cluster_msa.output import publish_outputs, staged_output, validate_outputs
+from cluster_msa.output import _selected_names, publish_outputs, staged_output, validate_outputs
 
 
 RECORDS = (
@@ -24,6 +24,128 @@ def write_valid_outputs(staging: Path, *, af3_json: bool = False) -> None:
     if af3_json:
         (staging / "first_data.json").write_text('{"name": "first"}\n', encoding="utf-8")
         (staging / "second_data.json").write_text('{"name": "second"}\n', encoding="utf-8")
+
+
+def test_selected_names_puts_success_manifest_last(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    write_valid_outputs(staging, af3_json=True)
+    (staging / "run.log").write_text("log\n", encoding="utf-8")
+    (staging / "run_manifest.json").write_text('{"status":"success"}\n', encoding="utf-8")
+
+    assert _selected_names(staging, RECORDS, af3_json=True) == [
+        "first.a3m",
+        "second.a3m",
+        "first_data.json",
+        "second_data.json",
+        "run.log",
+        "run_manifest.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "failed_name",
+    [
+        "first.a3m",
+        "second.a3m",
+        "first_data.json",
+        "second_data.json",
+        "run.log",
+        "run_manifest.json",
+    ],
+)
+@pytest.mark.parametrize("rollback_failure", [False, True])
+def test_publication_failure_never_leaves_new_success_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_name: str, rollback_failure: bool
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging, af3_json=True)
+    (staging / "run.log").write_text("new log\n", encoding="utf-8")
+    (staging / "run_manifest.json").write_text('{"status":"success"}\n', encoding="utf-8")
+    (output / "run_manifest.json").write_text('{"status":"old"}\n', encoding="utf-8")
+    (output / "unknown.txt").write_text("keep\n", encoding="utf-8")
+    real_replace = os.replace
+
+    def inject_failure(source: Path, destination: Path) -> None:
+        source = Path(source)
+        destination = Path(destination)
+        if (
+            source.parent.name.startswith(".cluster-msa-publish-")
+            and source.name == failed_name
+            and destination == output / failed_name
+        ):
+            raise OSError("injected publication failure")
+        if (
+            rollback_failure
+            and source.parent == output
+            and source.name == "first.a3m"
+            and destination.parent.name.startswith(".cluster-msa-publish-")
+        ):
+            raise OSError("injected rollback failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", inject_failure)
+
+    with pytest.raises(OutputValidationError, match="publication failed"):
+        publish_outputs(staging, output, RECORDS, af3_json=True, overwrite=True)
+
+    manifest = output / "run_manifest.json"
+    if manifest.exists():
+        assert '"status":"success"' not in manifest.read_text(encoding="utf-8")
+    assert (output / "unknown.txt").read_text(encoding="utf-8") == "keep\n"
+    unresolved = list(tmp_path.glob(".cluster-msa-publish-*/publication-backup-*/run_manifest.json"))
+    if not manifest.exists():
+        assert unresolved
+
+
+def test_failed_old_manifest_restore_preserves_recovery_without_new_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "output"
+    staging.mkdir()
+    output.mkdir()
+    write_valid_outputs(staging)
+    (staging / "run.log").write_text("new log\n", encoding="utf-8")
+    (staging / "run_manifest.json").write_text('{"status":"success"}\n', encoding="utf-8")
+    (output / "run_manifest.json").write_text('{"status":"old"}\n', encoding="utf-8")
+    (output / "unknown.txt").write_text("keep\n", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_publication_and_manifest_restore(source: Path, destination: Path) -> None:
+        source = Path(source)
+        destination = Path(destination)
+        if (
+            source.name == "second.a3m"
+            and source.parent.name.startswith(".cluster-msa-publish-")
+            and destination == output / "second.a3m"
+        ):
+            raise OSError("injected publication failure")
+        if (
+            source.name == "run_manifest.json"
+            and source.parent.name == "publication-backup-recovery"
+            and destination == output / "run_manifest.json"
+        ):
+            raise OSError("injected manifest restore failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_publication_and_manifest_restore)
+
+    with pytest.raises(OutputValidationError, match="manifest restore failure"):
+        publish_outputs(staging, output, RECORDS, af3_json=False, overwrite=True)
+
+    assert not (output / "run_manifest.json").exists()
+    backups = list(
+        tmp_path.glob(
+            ".cluster-msa-publish-*/publication-backup-recovery/run_manifest.json"
+        )
+    )
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == '{"status":"old"}\n'
+    assert (output / "unknown.txt").read_text(encoding="utf-8") == "keep\n"
 
 
 def test_nonempty_destination_requires_overwrite(tmp_path: Path) -> None:

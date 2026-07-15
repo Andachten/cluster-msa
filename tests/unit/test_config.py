@@ -146,6 +146,46 @@ def test_build_run_config_resolves_tools_and_portable_defaults(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("threads", True, "threads"),
+        ("threads", 1.5, "threads"),
+        ("threads", "1", "threads"),
+        ("cluster_identity", True, "cluster"),
+        ("cluster_identity", "0.7", "cluster"),
+        ("cluster_identity", float("nan"), "cluster"),
+        ("cluster_identity", 0, "cluster"),
+        ("cluster_coverage", False, "cluster"),
+        ("cluster_coverage", None, "cluster"),
+        ("cluster_coverage", 1.1, "cluster"),
+        ("cluster_mode", True, "cluster"),
+        ("cluster_mode", 1.5, "cluster"),
+        ("cluster_mode", "0", "cluster"),
+        ("gpus", 7, "GPU IDs"),
+        ("gpu", 1, "GPU flag"),
+        ("gpu", "true", "GPU flag"),
+        ("af3_json", 0, "AF3 flag"),
+        ("af3_json", "false", "AF3 flag"),
+    ],
+)
+def test_build_run_config_rejects_invalid_typed_values(tmp_path, name, value, message):
+    search = executable(tmp_path / "search")
+    database = tmp_path / "database"
+    database.mkdir()
+    (database / "uniref30_component").write_text("", encoding="utf-8")
+    (database / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    arguments = args_for(
+        tmp_path,
+        colabfold_search=str(search),
+        db=database,
+        **{name: value},
+    )
+
+    with pytest.raises(ConfigurationError, match=message):
+        build_run_config(arguments, {})
+
+
+@pytest.mark.parametrize(
     ("explicit", "environment", "supplied"),
     [
         ("./database", None, "./database"),

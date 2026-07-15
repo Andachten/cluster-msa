@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import shutil
 import tempfile
@@ -75,13 +76,34 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     if mode not in ("standard", "accelerated"):
         raise ConfigurationError("mode must be standard or accelerated")
     threads = _arg(args, "threads", default=1)
-    if not isinstance(threads, int) or threads <= 0:
+    if isinstance(threads, bool) or not isinstance(threads, int) or threads <= 0:
         raise ConfigurationError("threads must be positive")
     identity = _arg(args, "cluster_identity", default=0.7)
     coverage = _arg(args, "cluster_coverage", default=0.8)
     cluster_mode = _arg(args, "cluster_mode", default=0)
-    if not 0 < identity <= 1 or not 0 < coverage <= 1 or cluster_mode < 0:
+    fractions = (identity, coverage)
+    if (
+        any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 < value <= 1
+            for value in fractions
+        )
+        or isinstance(cluster_mode, bool)
+        or not isinstance(cluster_mode, int)
+        or cluster_mode < 0
+    ):
         raise ConfigurationError("cluster parameters are invalid")
+    gpu = _arg(args, "gpu", default=True)
+    if not isinstance(gpu, bool):
+        raise ConfigurationError("GPU flag must be boolean")
+    af3_json = _arg(args, "af3_json", default=False)
+    if not isinstance(af3_json, bool):
+        raise ConfigurationError("AF3 flag must be boolean")
+    gpus = _arg(args, "gpus")
+    if gpus is not None and not isinstance(gpus, str):
+        raise ConfigurationError("GPU IDs must be a string")
 
     input_path = _required_path(_arg(args, "input", "input_path"), "input")
     if not input_path.is_file():
@@ -98,8 +120,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
     if mode == "accelerated" and mmseqs is None:
         raise ConfigurationError("accelerated mode requires mmseqs")
 
-    gpu = bool(_arg(args, "gpu", default=True))
-    gpus = _arg(args, "gpus") or ""
+    gpus = gpus or ""
     tmp_dir = Path(_arg(args, "tmp_dir", "tmp") or ".cluster-msa-tmp").expanduser()
     _validate_directory_root(tmp_dir, "tmp")
     work_dir = _resolve_work_dir(args, mode, output_dir, tmp_dir)
@@ -116,7 +137,7 @@ def build_run_config(args: argparse.Namespace, environ: Mapping[str, str]) -> Ru
         threads=threads,
         gpu=gpu,
         gpus=gpus,
-        af3_json=bool(_arg(args, "af3_json", default=False)),
+        af3_json=af3_json,
         tmp_dir=tmp_dir,
         work_dir=work_dir,
         keep_work=bool(_arg(args, "keep_work", default=False)),

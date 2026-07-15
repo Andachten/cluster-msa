@@ -91,7 +91,17 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
         retained_manifest = None
         if config.keep_work:
             retained = run_dir / "retained"
-            shutil.copytree(staging, retained)
+            try:
+                shutil.copytree(staging, retained)
+            except OSError as caught:
+                error = OutputValidationError(f"cannot retain standard work: {caught}")
+                try:
+                    mark_manifest_failed(
+                        staging / "run_manifest.json", "work_retention", error
+                    )
+                except OutputValidationError as diagnostic_error:
+                    error.add_note(str(diagnostic_error))
+                raise error from caught
             retained_manifest = retained / "run_manifest.json"
         try:
             publish_outputs(

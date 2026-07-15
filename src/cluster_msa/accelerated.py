@@ -153,8 +153,15 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
                 retained = run_dir / "retained"
                 shutil.copytree(staging, retained)
                 retained_manifest = retained / "run_manifest.json"
-            except OSError as error:
-                raise OutputValidationError(f"cannot retain accelerated work: {error}") from error
+            except OSError as caught:
+                error = OutputValidationError(f"cannot retain accelerated work: {caught}")
+                try:
+                    mark_manifest_failed(
+                        staging / "run_manifest.json", "work_retention", error
+                    )
+                except OutputValidationError as diagnostic_error:
+                    error.add_note(str(diagnostic_error))
+                raise error from caught
         try:
             publish_outputs(
                 staging,

@@ -211,3 +211,30 @@ def test_accelerated_cli_marks_retained_manifest_failed_when_publication_fails(
     assert (document["status"], document["failure_stage"], document["error"]) == (
         "failed", "publication", "output publication failed"
     )
+
+
+def test_accelerated_keep_work_failure_marks_staging_manifest_failed(
+    tmp_path: Path, fake_database, fake_colabfold_search, fake_mmseqs, monkeypatch
+):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    monkeypatch.setenv("FAKE_COLABFOLD_ADD_HIT", "1")
+    monkeypatch.setattr(
+        "cluster_msa.accelerated.shutil.copytree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("retention denied")),
+    )
+
+    result = main([*accelerated_args(
+        input_path, output, fake_database, fake_colabfold_search.executable,
+        fake_mmseqs.executable, work
+    ), "--keep-work"])
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list(work.rglob("run_manifest.json"))
+    assert len(manifests) == 1
+    document = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert (document["status"], document["failure_stage"]) == ("failed", "work_retention")
+    assert document["error"] == "work retention failed"

@@ -75,10 +75,7 @@ def publish_outputs(
     _validate_unique_ids(records)
     validate_outputs(staging, records, af3_json)
 
-    names = [f"{record.id}.a3m" for record in records]
-    if af3_json:
-        names.extend(f"{record.id}_data.json" for record in records)
-    names.extend(name for name in ("run_manifest.json", "run.log") if _path_exists(staging / name))
+    names = _selected_names(staging, records, af3_json)
 
     transaction = _stage_publication(staging, output_dir, names)
     try:
@@ -91,6 +88,19 @@ def publish_outputs(
             except OSError:
                 pass
         raise
+
+
+def _selected_names(
+    staging: Path, records: Sequence[SequenceRecord], af3_json: bool
+) -> list[str]:
+    names = [f"{record.id}.a3m" for record in records]
+    if af3_json:
+        names.extend(f"{record.id}_data.json" for record in records)
+    if _path_exists(staging / "run.log"):
+        names.append("run.log")
+    if _path_exists(staging / "run_manifest.json"):
+        names.append("run_manifest.json")
+    return names
 
 
 def _stage_publication(staging: Path, output_dir: Path, names: Sequence[str]) -> Path:
