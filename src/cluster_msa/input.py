@@ -20,7 +20,7 @@ def load_sequences(path: Path) -> tuple[SequenceRecord, ...]:
 
     try:
         with path.open("r", encoding="utf-8", newline="") as input_file:
-            reader = csv.reader(input_file)
+            reader = csv.reader(input_file, strict=True)
             try:
                 header = next(reader)
             except StopIteration as error:

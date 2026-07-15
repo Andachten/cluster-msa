@@ -104,3 +104,12 @@ def test_load_sequences_reports_missing_file(tmp_path: Path) -> None:
 
 def test_load_sequences_reports_unreadable_path(tmp_path: Path) -> None:
     assert_invalid(tmp_path, "cannot read")
+
+
+def test_load_sequences_rejects_unterminated_quoted_value(tmp_path: Path) -> None:
+    path = write_csv(tmp_path, 'id,sequence\nexample,"ACDE\n')
+
+    with pytest.raises(InputValidationError, match=r"inputs\.csv.*read") as error:
+        load_sequences(path)
+
+    assert "ACDE" not in str(error.value)
