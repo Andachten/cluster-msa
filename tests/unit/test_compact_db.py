@@ -379,7 +379,7 @@ def test_split_combined_msa_publication_failure_restores_expected_and_preserves_
 
     def fail_second_publication(source: Path, destination: Path) -> None:
         if (
-            source.parent.name.startswith(".cluster-msa-split-")
+            source.parent.name.startswith(".cluster-msa-publish-")
             and source.name == "two.a3m"
             and destination == output_dir / "two.a3m"
         ):
@@ -412,7 +412,7 @@ def test_split_combined_msa_preserves_backup_when_publication_rollback_fails(
 
     def fail_publication_and_restore(source: Path, destination: Path) -> None:
         if (
-            source.parent.name.startswith(".cluster-msa-split-")
+            source.parent.name.startswith(".cluster-msa-publish-")
             and source.name == "two.a3m"
             and destination == output_dir / "two.a3m"
         ):

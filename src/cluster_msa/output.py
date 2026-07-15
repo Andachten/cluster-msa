@@ -1,14 +1,21 @@
+import fcntl
+import hashlib
 import json
 import os
 import shutil
 import stat
 import tempfile
+import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
 from cluster_msa.errors import OutputValidationError
 from cluster_msa.models import SequenceRecord
+
+
+_publication_locks: dict[str, threading.Lock] = {}
+_publication_locks_guard = threading.Lock()
 
 
 @contextmanager
@@ -67,18 +74,101 @@ def publish_outputs(
 ) -> None:
     _validate_unique_ids(records)
     validate_outputs(staging, records, af3_json)
-    _validate_destination(output_dir, overwrite)
 
     names = [f"{record.id}.a3m" for record in records]
     if af3_json:
         names.extend(f"{record.id}_data.json" for record in records)
     names.extend(name for name in ("run_manifest.json", "run.log") if _path_exists(staging / name))
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    transaction = _stage_publication(staging, output_dir, names)
+    try:
+        with _publication_lock(output_dir):
+            _publish_transaction(transaction, output_dir, names, overwrite)
+    except BaseException as error:
+        if transaction.exists() and "preserved at" not in str(error):
+            try:
+                shutil.rmtree(transaction, ignore_errors=True)
+            except OSError:
+                pass
+        raise
+
+
+def _stage_publication(staging: Path, output_dir: Path, names: Sequence[str]) -> Path:
+    transaction: Path | None = None
+    try:
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        transaction = Path(
+            tempfile.mkdtemp(prefix=".cluster-msa-publish-", dir=output_dir.parent)
+        )
+        for name in names:
+            shutil.copy2(staging / name, transaction / name)
+    except OSError as error:
+        cleanup_error: OSError | None = None
+        if transaction is not None:
+            try:
+                shutil.rmtree(transaction)
+            except OSError as caught:
+                cleanup_error = caught
+        cleanup_context = f"; transaction cleanup failed: {cleanup_error}" if cleanup_error else ""
+        raise OutputValidationError(
+            f"cannot stage publication transaction under {output_dir.parent}: "
+            f"{error}{cleanup_context}"
+        ) from error
+    return transaction
+
+
+@contextmanager
+def _publication_lock(output_dir: Path) -> Iterator[None]:
+    resolved = str(output_dir.resolve())
+    lock_name = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:24]
+    lock_path = output_dir.resolve().parent / f".cluster-msa-{lock_name}.lock"
+    with _publication_locks_guard:
+        thread_lock = _publication_locks.setdefault(resolved, threading.Lock())
+
+    # flock alone does not reliably serialize separate threads in one process.
+    with thread_lock:
+        try:
+            lock_file = lock_path.open("a+b")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except OSError as error:
+            try:
+                lock_file.close()
+            except (OSError, UnboundLocalError):
+                pass
+            raise OutputValidationError(
+                f"cannot acquire publication lock for {output_dir}: {error}"
+            ) from error
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+            except OSError as error:
+                raise OutputValidationError(
+                    f"cannot release publication lock for {output_dir}: {error}"
+                ) from error
+
+
+def _publish_transaction(
+    transaction: Path,
+    output_dir: Path,
+    names: Sequence[str],
+    overwrite: bool,
+) -> None:
+    _validate_destination(output_dir, overwrite)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise OutputValidationError(f"cannot create output directory: {output_dir}: {error}") from error
     for name in names:
         _validate_destination_file(output_dir / name)
 
-    backup = Path(tempfile.mkdtemp(prefix="publication-backup-", dir=staging))
+    backup = transaction / "publication-backup-recovery"
+    try:
+        backup.mkdir()
+    except OSError as error:
+        raise OutputValidationError(f"cannot create publication backup: {backup}: {error}") from error
     backed_up: list[str] = []
     published: list[str] = []
     try:
@@ -88,18 +178,33 @@ def publish_outputs(
                 os.replace(destination, backup / name)
                 backed_up.append(name)
         for name in names:
-            os.replace(staging / name, output_dir / name)
+            os.replace(transaction / name, output_dir / name)
             published.append(name)
     except OSError as error:
-        rollback_failures = _rollback_publication(staging, output_dir, backup, published, backed_up)
+        rollback_failures = _rollback_publication(
+            transaction, output_dir, backup, published, backed_up
+        )
         if rollback_failures:
             raise OutputValidationError(
                 f"output publication failed ({error}); backup preserved at {backup}; "
                 f"rollback failures: {'; '.join(rollback_failures)}"
             ) from error
-        shutil.rmtree(backup)
+        try:
+            shutil.rmtree(backup)
+        except OSError as cleanup_error:
+            raise OutputValidationError(
+                f"output publication failed ({error}); backup preserved at {backup}; "
+                f"backup cleanup failed: {cleanup_error}"
+            ) from error
+        try:
+            shutil.rmtree(transaction)
+        except OSError as cleanup_error:
+            raise OutputValidationError(
+                f"output publication failed ({error}); transaction preserved at {transaction}; "
+                f"transaction cleanup failed: {cleanup_error}"
+            ) from error
         raise OutputValidationError(f"output publication failed: {error}") from error
-    cleanup_after_publish(backup, output_dir)
+    cleanup_after_publish(transaction, output_dir)
 
 
 def _rollback_publication(
