@@ -1,6 +1,14 @@
 import pytest
 
-from cluster_msa.cli import build_parser
+from cluster_msa.cli import build_parser, main
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [([], 2), (["standard"], 2), (["--help"], 0), (["standard", "--help"], 0)],
+)
+def test_main_returns_argparse_exit_code_for_direct_api(arguments, expected):
+    assert main(arguments) == expected
 
 
 def test_standard_parser_uses_documented_long_options_only():

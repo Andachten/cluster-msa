@@ -10,7 +10,7 @@ from cluster_msa.af3 import write_af3_json
 from cluster_msa.clustering import cluster_sequences
 from cluster_msa.compact_db import build_compact_database, search_compact_database
 from cluster_msa.errors import ConfigurationError, OutputValidationError
-from cluster_msa.manifest import write_manifest
+from cluster_msa.manifest import mark_manifest_failed, write_manifest
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.standard import _preflight_destination, run_full_database_search
@@ -134,7 +134,7 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             fallback_reason=fallback_reason,
         )
         if not fallback_reason:
-            stage_durations["merge_publish"] = time.monotonic() - stage_started
+            stage_durations["merge_and_staging"] = time.monotonic() - stage_started
         stage_durations["total"] = time.monotonic() - total_started
         write_manifest(
             staging / "run_manifest.json",
@@ -145,18 +145,30 @@ def run_accelerated(config: RunConfig, records: Sequence[SequenceRecord]) -> Run
             finished_at=datetime.now(timezone.utc),
             stage_durations=stage_durations,
         )
+        retained_manifest = None
         if config.keep_work:
             try:
-                shutil.copytree(staging, run_dir / "retained")
+                retained = run_dir / "retained"
+                shutil.copytree(staging, retained)
+                retained_manifest = retained / "run_manifest.json"
             except OSError as error:
                 raise OutputValidationError(f"cannot retain accelerated work: {error}") from error
-        publish_outputs(
-            staging,
-            config.output_dir,
-            records,
-            af3_json=config.af3_json,
-            overwrite=config.overwrite,
-        )
+        try:
+            publish_outputs(
+                staging,
+                config.output_dir,
+                records,
+                af3_json=config.af3_json,
+                overwrite=config.overwrite,
+            )
+        except OutputValidationError as error:
+            for manifest_path in (staging / "run_manifest.json", retained_manifest):
+                if manifest_path is not None:
+                    try:
+                        mark_manifest_failed(manifest_path, "publication", error)
+                    except OutputValidationError as diagnostic_error:
+                        error.add_note(str(diagnostic_error))
+            raise
 
     if not config.keep_work:
         cleanup_after_publish(run_dir, config.output_dir)

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from cluster_msa.errors import OutputValidationError
-from cluster_msa.manifest import write_manifest
+from cluster_msa.manifest import mark_manifest_failed, write_manifest
 from cluster_msa.models import RunConfig, RunResult, SequenceRecord
 from cluster_msa.output import cleanup_after_publish, publish_outputs, staged_output, validate_outputs
 from cluster_msa.tools import get_tool_version, run_command
@@ -82,19 +82,31 @@ def run_standard(config: RunConfig, records: Sequence[SequenceRecord]) -> RunRes
             finished_at=finished_at,
             stage_durations={
                 "full_database_search": search_duration,
-                "validation_publication": time.monotonic() - publication_started,
+                "validation_and_staging": time.monotonic() - publication_started,
                 "total": time.monotonic() - total_started,
             },
         )
+        retained_manifest = None
         if config.keep_work:
-            shutil.copytree(staging, run_dir / "retained")
-        publish_outputs(
-            staging,
-            config.output_dir,
-            records,
-            af3_json=config.af3_json,
-            overwrite=config.overwrite,
-        )
+            retained = run_dir / "retained"
+            shutil.copytree(staging, retained)
+            retained_manifest = retained / "run_manifest.json"
+        try:
+            publish_outputs(
+                staging,
+                config.output_dir,
+                records,
+                af3_json=config.af3_json,
+                overwrite=config.overwrite,
+            )
+        except OutputValidationError as error:
+            for manifest_path in (staging / "run_manifest.json", retained_manifest):
+                if manifest_path is not None:
+                    try:
+                        mark_manifest_failed(manifest_path, "publication", error)
+                    except OutputValidationError as diagnostic_error:
+                        error.add_note(str(diagnostic_error))
+            raise
     if not config.keep_work:
         cleanup_after_publish(run_dir, config.output_dir)
     return result

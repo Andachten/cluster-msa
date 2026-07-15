@@ -60,6 +60,23 @@ def test_resolve_database_precedence_and_component_validation(tmp_path):
     validate_database(environ_db)
 
 
+@pytest.mark.parametrize("source", ["explicit", "environment"])
+def test_resolve_database_preserves_relative_user_spelling(tmp_path, monkeypatch, source):
+    database = tmp_path / "relative-db"
+    database.mkdir()
+    (database / "uniref30_component").write_text("", encoding="utf-8")
+    (database / "colabfold_envdb_component").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    explicit = Path("relative-db") if source == "explicit" else None
+    environ = {"CLUSTER_MSA_DB": "relative-db"} if source == "environment" else {}
+
+    resolved = resolve_database(explicit, environ)
+    assert resolved == Path("relative-db")
+    assert not resolved.is_absolute()
+    assert resolved.resolve() == database
+
+
 @pytest.mark.parametrize("bad", ["missing", "file", "incomplete"])
 def test_validate_database_rejects_invalid_database(tmp_path, bad):
     path = tmp_path / bad

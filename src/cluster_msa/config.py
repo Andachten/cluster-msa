@@ -38,7 +38,7 @@ def resolve_database(explicit: Path | None, environ: Mapping[str, str]) -> Path:
         raise ConfigurationError("database is required: use --db-path or CLUSTER_MSA_DB")
     path = Path(value).expanduser()
     validate_database(path)
-    return path.resolve()
+    return path
 
 
 def validate_database(path: Path) -> None:

@@ -2,9 +2,9 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
 
 from cluster_msa import __version__
 from cluster_msa.errors import OutputValidationError
@@ -21,7 +21,32 @@ def write_manifest(
     finished_at: datetime,
     stage_durations: Mapping[str, float],
 ) -> None:
-    _validate_timing(started_at, finished_at, stage_durations)
+    try:
+        _validate_inputs(config, result, tool_versions, started_at, finished_at, stage_durations)
+        _write_success_manifest(
+            path,
+            config,
+            result,
+            tool_versions,
+            started_at,
+            finished_at,
+            stage_durations,
+        )
+    except OutputValidationError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as error:
+        raise OutputValidationError("invalid run manifest data") from error
+
+
+def _write_success_manifest(
+    path: Path,
+    config: RunConfig,
+    result: RunResult,
+    tool_versions: Mapping[str, str],
+    started_at: datetime,
+    finished_at: datetime,
+    stage_durations: Mapping[str, float],
+) -> None:
     parameters = {
         "threads": config.threads,
         "gpu": config.gpu,
@@ -67,6 +92,7 @@ def write_manifest(
         "parameters": parameters,
         "tools": tools,
         "timing": {
+            "timing_scope": "through_manifest_finalization_before_atomic_publication",
             "started_at": _utc_iso(started_at),
             "finished_at": _utc_iso(finished_at),
             "stage_durations_seconds": dict(stage_durations),
@@ -76,9 +102,27 @@ def write_manifest(
     _write_atomic(path, json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n")
 
 
+def mark_manifest_failed(path: Path, stage: str, error: Exception) -> None:
+    del error
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document.update(
+            status="failed",
+            failure_stage=stage,
+            error="output publication failed",
+        )
+        _write_atomic(
+            path, json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as caught:
+        raise OutputValidationError(f"cannot mark run manifest failed: {path}") from caught
+
+
 def _validate_timing(
     started_at: datetime, finished_at: datetime, stage_durations: Mapping[str, float]
 ) -> None:
+    if not isinstance(started_at, datetime) or not isinstance(finished_at, datetime):
+        raise OutputValidationError("manifest timestamps must be datetimes")
     if started_at.tzinfo is None or started_at.utcoffset() is None:
         raise OutputValidationError("manifest timestamps must be timezone-aware")
     if finished_at.tzinfo is None or finished_at.utcoffset() is None:
@@ -86,7 +130,13 @@ def _validate_timing(
     if finished_at < started_at:
         raise OutputValidationError("manifest finish timestamp is before start timestamp")
     for stage, duration in stage_durations.items():
-        if not isinstance(duration, (int, float)) or not math.isfinite(duration):
+        if not isinstance(stage, str) or not stage.strip():
+            raise OutputValidationError("manifest stage names must be nonempty strings")
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+        ):
             raise OutputValidationError(f"manifest duration for {stage} must be finite")
         if duration < 0:
             raise OutputValidationError(f"manifest duration for {stage} must be nonnegative")
@@ -97,7 +147,73 @@ def _tool_entry(path: Path, versions: Mapping[str, str], key: str) -> dict[str, 
         version = versions[key]
     except KeyError as error:
         raise OutputValidationError(f"manifest is missing version for {key}") from error
-    return {"path": str(path), "name": path.name, "version": version}
+    name = path.name
+    if not name:
+        raise OutputValidationError(f"manifest tool name for {key} must be nonempty")
+    return {"path": str(path), "name": name, "version": version}
+
+
+def _validate_inputs(
+    config: RunConfig,
+    result: RunResult,
+    tool_versions: Mapping[str, str],
+    started_at: datetime,
+    finished_at: datetime,
+    stage_durations: Mapping[str, float],
+) -> None:
+    if config.mode not in ("standard", "accelerated"):
+        raise OutputValidationError("manifest mode must be standard or accelerated")
+    if result.mode != config.mode:
+        raise OutputValidationError("manifest config and result modes must match")
+    _validate_count("expected", result.expected_count)
+    _validate_count("generated", result.generated_count)
+    if result.generated_count > result.expected_count:
+        raise OutputValidationError("manifest generated count cannot exceed expected count")
+    if result.fallback_reason is not None and not isinstance(result.fallback_reason, str):
+        raise OutputValidationError("manifest fallback reason must be a string or null")
+
+    if config.mode == "standard":
+        if (
+            result.representative_count is not None
+            or result.nonrepresentative_count is not None
+            or result.fallback_reason is not None
+        ):
+            raise OutputValidationError("standard manifest cannot contain accelerated results")
+    else:
+        if config.toolchain.mmseqs is None:
+            raise OutputValidationError("accelerated manifest requires mmseqs")
+        _validate_count("representative", result.representative_count)
+        _validate_count("nonrepresentative", result.nonrepresentative_count)
+
+    if not isinstance(tool_versions, Mapping):
+        raise OutputValidationError("manifest tool versions must be a mapping")
+    for name, version in tool_versions.items():
+        if not isinstance(name, str) or not name.strip():
+            raise OutputValidationError("manifest tool names must be nonempty strings")
+        if not isinstance(version, str) or not version.strip():
+            raise OutputValidationError(f"manifest version for {name} must be nonempty")
+    required_tools = {"colabfold_search"}
+    if config.mode == "accelerated":
+        required_tools.add("mmseqs")
+    if not required_tools.issubset(tool_versions):
+        raise OutputValidationError("manifest is missing a required tool version")
+
+    for key, executable in (
+        ("colabfold_search", config.toolchain.colabfold_search),
+        ("mmseqs", config.toolchain.mmseqs),
+    ):
+        if executable is not None and (
+            not isinstance(executable, Path) or not executable.name
+        ):
+            raise OutputValidationError(f"manifest tool name for {key} must be nonempty")
+    if not isinstance(stage_durations, Mapping):
+        raise OutputValidationError("manifest stage durations must be a mapping")
+    _validate_timing(started_at, finished_at, stage_durations)
+
+
+def _validate_count(name: str, value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise OutputValidationError(f"manifest {name} count must be a nonnegative integer")
 
 
 def _utc_iso(value: datetime) -> str:

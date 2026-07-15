@@ -1,11 +1,12 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from cluster_msa.errors import OutputValidationError
-from cluster_msa.manifest import write_manifest
+from cluster_msa.manifest import mark_manifest_failed, write_manifest
 from cluster_msa.models import RunConfig, RunResult, Toolchain
 
 
@@ -86,6 +87,7 @@ def test_write_manifest_has_stable_v1_schema_and_no_sensitive_content(tmp_path, 
             },
         },
         "timing": {
+            "timing_scope": "through_manifest_finalization_before_atomic_publication",
             "started_at": "2026-07-15T09:30:00Z",
             "finished_at": "2026-07-15T09:30:12Z",
             "stage_durations_seconds": {"clustering": 1.25, "total": 12.0},
@@ -215,3 +217,116 @@ def test_write_manifest_is_stable_across_mapping_order(tmp_path):
     write_manifest(second, **arguments, stage_durations={"total": 2.0, "search": 1.0})
 
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_mark_manifest_failed_atomically_updates_only_diagnostic_status(tmp_path):
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "manifest.json"
+    write_manifest(
+        path,
+        config=make_config(tmp_path),
+        result=RunResult("standard", 1, 1),
+        tool_versions={"colabfold_search": "version"},
+        started_at=now,
+        finished_at=now,
+        stage_durations={"total": 0.0},
+    )
+    original = json.loads(path.read_text(encoding="utf-8"))
+
+    mark_manifest_failed(path, "publication", OutputValidationError("token=secret-value"))
+
+    failed = json.loads(path.read_text(encoding="utf-8"))
+    assert failed == {
+        **original,
+        "status": "failed",
+        "failure_stage": "publication",
+        "error": "output publication failed",
+    }
+    assert "secret-value" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("config_changes", "result", "versions", "durations"),
+    [
+        ({"mode": "invalid"}, RunResult("invalid", 1, 1), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("accelerated", 1, 1, 1, 0), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", -1, 0), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", True, 1), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 2), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1, 0, None), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1, None, None, "fallback"), {"colabfold_search": "v"}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1), {}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": ""}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": 7}, {"total": 0.0}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": "v"}, {"": 0.0}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": "v"}, {7: 0.0}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": "v"}, {"total": True}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": "v"}, {"total": "0"}),
+        ({}, RunResult("standard", 1, 1), {"colabfold_search": "v"}, {"total": float("inf")}),
+    ],
+)
+def test_write_manifest_rejects_malformed_standard_inputs(
+    tmp_path, config_changes, result, versions, durations
+):
+    config = replace(make_config(tmp_path), **config_changes)
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=config,
+            result=result,
+            tool_versions=versions,
+            started_at=now,
+            finished_at=now,
+            stage_durations=durations,
+        )
+
+
+@pytest.mark.parametrize(
+    ("config", "result", "versions"),
+    [
+        ("missing_mmseqs", RunResult("accelerated", 2, 2, 1, 1), {"colabfold_search": "v", "mmseqs": "m"}),
+        ("valid", RunResult("accelerated", 2, 2, None, 1), {"colabfold_search": "v", "mmseqs": "m"}),
+        ("valid", RunResult("accelerated", 2, 2, 1, -1), {"colabfold_search": "v", "mmseqs": "m"}),
+        ("valid", RunResult("accelerated", 2, 2, 1, True), {"colabfold_search": "v", "mmseqs": "m"}),
+        ("valid", RunResult("accelerated", 2, 2, 1, 1, 7), {"colabfold_search": "v", "mmseqs": "m"}),
+        ("valid", RunResult("accelerated", 2, 2, 1, 1), {"colabfold_search": "v"}),
+        ("valid", RunResult("accelerated", 2, 2, 1, 1), {"colabfold_search": "v", "mmseqs": ""}),
+    ],
+)
+def test_write_manifest_rejects_malformed_accelerated_inputs(
+    tmp_path, config, result, versions
+):
+    run_config = make_config(tmp_path, mode="accelerated")
+    if config == "missing_mmseqs":
+        run_config = replace(run_config, toolchain=replace(run_config.toolchain, mmseqs=None))
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=run_config,
+            result=result,
+            tool_versions=versions,
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )
+
+
+def test_write_manifest_rejects_empty_executable_name(tmp_path):
+    config = make_config(tmp_path)
+    config = replace(config, toolchain=replace(config.toolchain, colabfold_search=Path(".")))
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(OutputValidationError):
+        write_manifest(
+            tmp_path / "manifest.json",
+            config=config,
+            result=RunResult("standard", 1, 1),
+            tool_versions={"colabfold_search": "version"},
+            started_at=now,
+            finished_at=now,
+            stage_durations={"total": 0.0},
+        )

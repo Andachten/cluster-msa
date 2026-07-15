@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from cluster_msa.cli import main
+from cluster_msa.errors import OutputValidationError
 
 
 def test_standard_cli_publishes_all_msas_and_log(
@@ -44,8 +45,11 @@ def test_standard_cli_publishes_all_msas_and_log(
     assert manifest["input"] == {"path": str(input_path), "count": 2}
     assert manifest["tools"]["colabfold_search"]["version"] == "fake-colabfold-search 1.0"
     assert set(manifest["timing"]["stage_durations_seconds"]) == {
-        "full_database_search", "validation_publication", "total"
+        "full_database_search", "validation_and_staging", "total"
     }
+    assert manifest["timing"]["timing_scope"] == (
+        "through_manifest_finalization_before_atomic_publication"
+    )
     assert all(value >= 0 for value in manifest["timing"]["stage_durations_seconds"].values())
     derived_work = tmp_dir / "cluster-msa-work"
     assert derived_work.is_dir()
@@ -269,3 +273,65 @@ def test_standard_cli_treats_version_failure_as_external_error(
     assert not output.exists()
     assert list(work.rglob("run.log"))
     assert not list(work.rglob("run_manifest.json"))
+
+
+def test_standard_cli_marks_retained_manifest_failed_when_publication_fails(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, monkeypatch
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    output = tmp_path / "output"
+    tmp_dir = tmp_path / "tmp"
+
+    def fail_publication(*args, **kwargs):
+        raise OutputValidationError("publication failed with token=secret-value")
+
+    monkeypatch.setattr("cluster_msa.standard.publish_outputs", fail_publication)
+    result = main(
+        [
+            "standard", "--input", str(input_path), "--output-dir", str(output),
+            "--db-path", str(fake_database), "--colabfold-search",
+            str(fake_colabfold_search.executable), "--tmp-dir", str(tmp_dir), "--keep-work",
+        ]
+    )
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list((tmp_dir / "cluster-msa-work").rglob("run_manifest.json"))
+    assert len(manifests) == 2
+    for manifest in manifests:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        assert document["status"] == "failed"
+        assert document["failure_stage"] == "publication"
+        assert document["error"] == "output publication failed"
+        assert "secret-value" not in manifest.read_text(encoding="utf-8")
+
+
+def test_standard_cli_manifest_preserves_relative_database_spelling(
+    tmp_path: Path, fake_database: Path, fake_colabfold_search, monkeypatch
+) -> None:
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\n", encoding="utf-8")
+    output = tmp_path / "output"
+    relative_database = Path(fake_database.name)
+    monkeypatch.chdir(tmp_path)
+
+    result = main(
+        [
+            "standard", "--input", str(input_path), "--output-dir", str(output),
+            "--db-path", str(relative_database), "--colabfold-search",
+            str(fake_colabfold_search.executable), "--tmp-dir", str(tmp_path / "tmp"),
+        ]
+    )
+
+    assert result == 0
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["database"] == {
+        "path": str(relative_database),
+        "resolved_path": str(fake_database.resolve()),
+    }
+    search = [
+        invocation for invocation in fake_colabfold_search.invocations()
+        if invocation["argv"] != ["--version"]
+    ][0]
+    assert search["argv"][1] == str(relative_database)

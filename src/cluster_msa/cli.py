@@ -51,7 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     verbose = False
     try:
-        args = build_parser().parse_args(argv)
+        try:
+            args = build_parser().parse_args(argv)
+        except SystemExit as error:
+            return error.code if isinstance(error.code, int) else 1
         verbose = args.verbose
         config = build_run_config(args, os.environ)
         records = load_sequences(config.input_path)

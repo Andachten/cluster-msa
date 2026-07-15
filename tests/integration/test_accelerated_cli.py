@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from cluster_msa.cli import main
+from cluster_msa.errors import OutputValidationError
 
 
 def accelerated_args(input_path, output, database, colabfold, mmseqs, work):
@@ -62,8 +63,11 @@ def test_accelerated_cli_runs_documented_pipeline_once_per_batch(
     }
     assert set(manifest["timing"]["stage_durations_seconds"]) == {
         "clustering", "representative_search", "compact_database",
-        "nonrepresentative_search", "merge_publish", "total"
+        "nonrepresentative_search", "merge_and_staging", "total"
     }
+    assert manifest["timing"]["timing_scope"] == (
+        "through_manifest_finalization_before_atomic_publication"
+    )
 
 
 def test_accelerated_cli_generates_af3_for_every_record(
@@ -177,3 +181,31 @@ def test_accelerated_cli_rejects_malformed_result2msa_without_publishing(
     assert not output.exists()
     assert list(work.glob("accelerated-*/output-*/run.log"))
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_accelerated_cli_marks_retained_manifest_failed_when_publication_fails(
+    tmp_path: Path, fake_database, fake_colabfold_search, fake_mmseqs, monkeypatch
+):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id,sequence\none,ACDE\ntwo,FGHI\n", encoding="utf-8")
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    monkeypatch.setenv("FAKE_COLABFOLD_ADD_HIT", "1")
+
+    def fail_publication(*args, **kwargs):
+        raise OutputValidationError("private publication details")
+
+    monkeypatch.setattr("cluster_msa.accelerated.publish_outputs", fail_publication)
+    result = main(accelerated_args(
+        input_path, output, fake_database, fake_colabfold_search.executable,
+        fake_mmseqs.executable, work
+    ))
+
+    assert result == 5
+    assert not output.exists()
+    manifests = list(work.rglob("run_manifest.json"))
+    assert len(manifests) == 1
+    document = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert (document["status"], document["failure_stage"], document["error"]) == (
+        "failed", "publication", "output publication failed"
+    )
